@@ -550,22 +550,36 @@ function UserMgmt({ctx}){
       addAudit("USER_DELETED",id,"User deleted");flash("User deleted");setConfirm(null);
     }catch(e){flash(e.message,"error");}
   };
-  const invite=async(email,role,dept,name)=>{
+  const invite=async(email,role,dept,inviteName)=>{
     try{
-      // Send Supabase invite email
-      const {data,error} = await supabase.auth.admin.inviteUserByEmail(email);
+      // Redirect to user portal (or admin portal if role is admin)
+      const redirectTo = role==="admin"
+        ? "https://facilflow-v2-admin.vercel.app"
+        : "https://facilflowuser.vercel.app";
+
+      const {data,error} = await supabase.auth.signInWithOtp({
+        email,
+        options: {
+          emailRedirectTo: redirectTo,
+          shouldCreateUser: true,
+        }
+      });
       if(error) throw error;
-      // Create profile row
+
+      // Create profile row with a placeholder id — will be linked when user accepts
+      // We store it with status "invited" so admin can track it
+      const displayName = inviteName || email.split("@")[0];
+      const initials = displayName.trim().split(" ").map(n=>n[0]).join("").slice(0,2).toUpperCase();
       const profile={
-        id:data.user.id, tenant_id:tid,
-        name:name||email.split("@")[0],
-        initials:(name||email).slice(0,2).toUpperCase(),
-        email, role, dept, status:"active",
+        tenant_id:tid,
+        name: displayName,
+        initials,
+        email, role, dept, status:"invited",
       };
       const {data:saved,error:pe}=await supabase.from("users").insert([profile]).select().single();
       if(pe) throw pe;
       setUsers(p=>[...p,saved]);
-      addAudit("USER_INVITED",email,`Invitation sent to ${email}`);
+      addAudit("USER_INVITED",email,`Invitation sent to ${email} as ${role}`);
       flash(`Invitation sent to ${email}`);
     }catch(e){flash(e.message,"error");}
   };
