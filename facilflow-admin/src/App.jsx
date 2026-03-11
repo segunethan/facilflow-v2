@@ -550,38 +550,23 @@ function UserMgmt({ctx}){
       addAudit("USER_DELETED",id,"User deleted");flash("User deleted");setConfirm(null);
     }catch(e){flash(e.message,"error");}
   };
-  const invite=async(email,role,dept,inviteName)=>{
+  const invite=async(email,name,role,dept,tempPassword)=>{
     try{
-      // Redirect to user portal (or admin portal if role is admin)
       const redirectTo = role==="admin"
         ? "https://facilflow-v2-admin.vercel.app"
         : "https://facilflowuser.vercel.app";
 
-      const {data,error} = await supabase.auth.signInWithOtp({
-        email,
-        options: {
-          emailRedirectTo: redirectTo,
-          shouldCreateUser: true,
-        }
+      // Call edge function which uses service role key
+      const { data, error } = await supabase.functions.invoke("invite-user", {
+        body: { email, name, role, dept, tenant_id:tid, temp_password:tempPassword, redirect_to:redirectTo }
       });
       if(error) throw error;
+      if(data.error) throw new Error(data.error);
 
-      // Create profile row with a placeholder id — will be linked when user accepts
-      // We store it with status "invited" so admin can track it
-      const displayName = inviteName || email.split("@")[0];
-      const initials = displayName.trim().split(" ").map(n=>n[0]).join("").slice(0,2).toUpperCase();
-      const profile={
-        tenant_id:tid,
-        name: displayName,
-        initials,
-        email, role, dept, status:"invited",
-      };
-      const {data:saved,error:pe}=await supabase.from("users").insert([profile]).select().single();
-      if(pe) throw pe;
-      setUsers(p=>[...p,saved]);
-      addAudit("USER_INVITED",email,`Invitation sent to ${email} as ${role}`);
+      setUsers(p=>[...p, data.user]);
+      addAudit("USER_INVITED", email, `${name} invited as ${role}`);
       flash(`Invitation sent to ${email}`);
-    }catch(e){flash(e.message,"error");}
+    }catch(e){ flash(e.message,"error"); }
   };
   const updateUser=(id,data)=>{
     setUsers(p=>p.map(u=>u.id!==id?u:{...u,...data}));addAudit("USER_UPDATED",id,"User details updated");flash("User updated");
@@ -631,7 +616,7 @@ function UserMgmt({ctx}){
       </div>
 
       {/* Invite / Add modal */}
-      {modal==="add"&&<InviteModal onClose={()=>setModal(null)} onInvite={invite}/>}
+      {modal==="add"&&<InviteModal onClose={()=>setModal(null)} onInvite={(email,name,role,dept,pw)=>invite(email,name,role,dept,pw)}/>}
       {modal?.edit&&<EditUserModal user={modal.edit} onClose={()=>setModal(null)} onSave={updateUser}/>}
 
       {/* Confirm modal */}
@@ -656,26 +641,60 @@ function UserMgmt({ctx}){
 }
 
 function InviteModal({onClose,onInvite}){
-  const [email,setEmail]=useState("");
-  const [role,setRole]=useState("employee");
-  const [dept,setDept]=useState("Finance");
-  const go=()=>{if(!email)return;onInvite(email,role,dept);onClose();};
+  const [email,    setEmail]   = useState("");
+  const [name,     setName]    = useState("");
+  const [role,     setRole]    = useState("employee");
+  const [dept,     setDept]    = useState("Finance");
+  const [password, setPass]    = useState("");
+  const [confirm,  setConfirm] = useState("");
+  const [err,      setErr]     = useState("");
+
+  const go=()=>{
+    setErr("");
+    if(!email) return setErr("Email is required.");
+    if(!name)  return setErr("Full name is required.");
+    if(password.length < 8) return setErr("Temporary password must be at least 8 characters.");
+    if(password !== confirm) return setErr("Passwords do not match.");
+    onInvite(email, name, role, dept, password);
+    onClose();
+  };
+
   return (
-    <Modal title="Invite New User" sub="An invitation email will be sent" onClose={onClose} w={480}>
+    <Modal title="Invite New User" sub="User will receive an email to access the platform" onClose={onClose} w={500}>
       <div style={{display:"flex",flexDirection:"column",gap:14}}>
-        <div><label style={LBL}>Email Address</label><input value={email} onChange={e=>setEmail(e.target.value)} style={inp()} placeholder="user@africaprudential.com"/></div>
-        <div><label style={LBL}>Role</label>
-          <select value={role} onChange={e=>setRole(e.target.value)} style={inp()}>
-            {USER_ROLES.map(r=><option key={r} value={r}>{r.replace("_"," ")}</option>)}
-          </select>
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:14}}>
+          <div style={{gridColumn:"1/-1"}}>
+            <label style={LBL}>Full Name</label>
+            <input value={name} onChange={e=>setName(e.target.value)} style={inp()} placeholder="e.g. Adaeze Okonkwo"/>
+          </div>
+          <div style={{gridColumn:"1/-1"}}>
+            <label style={LBL}>Email Address</label>
+            <input value={email} onChange={e=>setEmail(e.target.value)} style={inp()} placeholder="user@africaprudential.com"/>
+          </div>
+          <div>
+            <label style={LBL}>Role</label>
+            <select value={role} onChange={e=>setRole(e.target.value)} style={inp()}>
+              {USER_ROLES.map(r=><option key={r} value={r}>{r.replace("_"," ")}</option>)}
+            </select>
+          </div>
+          <div>
+            <label style={LBL}>Department</label>
+            <select value={dept} onChange={e=>setDept(e.target.value)} style={inp()}>
+              {["Finance","HR","IT","Operations","Legal","Facilities","Compliance"].map(d=><option key={d} value={d}>{d}</option>)}
+            </select>
+          </div>
+          <div>
+            <label style={LBL}>Temporary Password</label>
+            <input type="password" value={password} onChange={e=>setPass(e.target.value)} style={inp()} placeholder="Min 8 characters"/>
+          </div>
+          <div>
+            <label style={LBL}>Confirm Password</label>
+            <input type="password" value={confirm} onChange={e=>setConfirm(e.target.value)} style={inp()} placeholder="Re-enter password"/>
+          </div>
         </div>
-        <div><label style={LBL}>Department</label>
-          <select value={dept} onChange={e=>setDept(e.target.value)} style={inp()}>
-            {["Finance","HR","IT","Operations","Legal","Facilities","Compliance"].map(d=><option key={d} value={d}>{d}</option>)}
-          </select>
-        </div>
+        {err && <div style={{padding:"9px 13px",borderRadius:7,background:C.redBg,border:`1px solid ${C.red}30`,fontSize:13,color:C.red,fontWeight:500}}>{err}</div>}
         <div style={{padding:"10px 13px",borderRadius:7,background:C.blueBg,border:`1px solid ${C.blue}30`,fontSize:12,color:C.blue,fontWeight:600}}>
-          📧 User will receive an email invitation to set up their account
+          📧 User will receive an invite email. They can log in immediately with the temporary password you set.
         </div>
       </div>
       <div style={{display:"flex",justifyContent:"flex-end",gap:8,marginTop:18,paddingTop:16,borderTop:`1px solid ${C.border}`}}>
