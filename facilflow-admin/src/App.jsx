@@ -565,13 +565,16 @@ function RequestsMgmt({ctx}){
     } catch(e){ flash(e.message,"error"); }
   };
 
-  const statusColor = s => ({
-    pending_approval:{bg:"#FFF7ED",color:"#D97706"},
-    approved:        {bg:"#ECFDF5",color:"#059669"},
-    rejected:        {bg:"#FEF2F2",color:"#DC2626"},
-    fulfilled:       {bg:"#EFF6FF",color:"#2563EB"},
-    cancelled:       {bg:"#F8FAFC",color:"#64748B"},
-  }[s]||{bg:"#F8FAFC",color:"#64748B"};
+  const statusColor = s => {
+    const map = {
+      pending_approval:{bg:"#FFF7ED",color:"#D97706"},
+      approved:        {bg:"#ECFDF5",color:"#059669"},
+      rejected:        {bg:"#FEF2F2",color:"#DC2626"},
+      fulfilled:       {bg:"#EFF6FF",color:"#2563EB"},
+      cancelled:       {bg:"#F8FAFC",color:"#64748B"},
+    };
+    return map[s] || {bg:"#F8FAFC",color:"#64748B"};
+  };
 
   return (
     <div style={{display:"flex",flexDirection:"column",gap:16}}>
