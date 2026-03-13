@@ -92,6 +92,28 @@ export const updateInventoryItem = async (id, updates) => {
   return data
 }
 
+// ── FACILITY REQUESTS ──────────────────────────────────────
+export const fetchRequests = async (tenantId) => {
+  const { data, error } = await supabase
+    .from('requests')
+    .select('*')
+    .eq('tenant_id', tenantId)
+    .order('created_at', { ascending: false })
+  if (error) throw error
+  return data
+}
+
+export const updateRequest = async (id, updates) => {
+  const { data, error } = await supabase
+    .from('requests')
+    .update({ ...updates, updated_at: new Date().toISOString() })
+    .eq('id', id)
+    .select()
+    .single()
+  if (error) throw error
+  return data
+}
+
 // ── CHANGE REQUESTS ────────────────────────────────────────
 export const fetchCRs = async (tenantId) => {
   const { data, error } = await supabase.from('change_requests').select('*').eq('tenant_id', tenantId).order('created_at', { ascending: false })

@@ -1,5 +1,5 @@
 import { supabase } from "./lib/supabase.js";
-import { fetchUsers, updateUser, deleteUser, fetchVehicles, createVehicle, updateVehicle, fetchDrivers, createDriver, updateDriver, fetchInventory, createInventoryItem, updateInventoryItem, fetchCRs, updateCR, fetchAuditLog, addAuditEntry } from "./lib/supabase.js";
+import { fetchUsers, updateUser, deleteUser, fetchVehicles, createVehicle, updateVehicle, fetchDrivers, createDriver, updateDriver, fetchInventory, createInventoryItem, updateInventoryItem, fetchRequests, updateRequest, fetchCRs, updateCR, fetchAuditLog, addAuditEntry } from "./lib/supabase.js";
 import { useState, useMemo, useCallback, useEffect } from "react";
 
 /* =========================================================
@@ -254,6 +254,7 @@ const NAV = [
     {k:"users",      l:"User Management",  icon:"👤"},
   ]},
   {group:"Facilities",items:[
+    {k:"requests",   l:"Facility Requests",icon:"📋"},
     {k:"fleet",      l:"Fleet Management", icon:"🚗"},
     {k:"drivers",    l:"Driver Roster",    icon:"🪪"},
     {k:"inventory",  l:"Inventory",        icon:"📦"},
@@ -277,6 +278,7 @@ export default function AdminApp({ currentUser }){
   const [vehicles,  setVehicles] = useState([]);
   const [drivers,   setDrivers]  = useState([]);
   const [inventory, setInv]      = useState([]);
+  const [requests,  setRequests] = useState([]);
   const [crs,       setCrs]      = useState([]);
   const [audit,     setAudit]    = useState([]);
   const [toast,     setToast]    = useState(null);
@@ -294,13 +296,15 @@ export default function AdminApp({ currentUser }){
       fetchVehicles(tid),
       fetchDrivers(tid),
       fetchInventory(tid),
+      fetchRequests(tid),
       fetchCRs(tid),
       fetchAuditLog(tid),
-    ]).then(([u,v,d,inv,cr,al])=>{
+    ]).then(([u,v,d,inv,reqs,cr,al])=>{
       setUsers(u||[]);
       setVehicles((v||[]).map(normVeh));
       setDrivers((d||[]).map(normDrv));
       setInv((inv||[]).map(normInv));
+      setRequests(reqs||[]);
       setCrs((cr||[]).map(normCR));
       setAudit((al||[]).map(normAudit));
     }).catch(console.error)
@@ -337,6 +341,7 @@ export default function AdminApp({ currentUser }){
     vehicles, setVehicles,
     drivers, setDrivers,
     inventory, setInv,
+    requests, setRequests,
     crs, setCrs,
     audit, addAudit:addAuditFn,
     flash,
@@ -403,6 +408,7 @@ export default function AdminApp({ currentUser }){
         <main style={{flex:1,padding:28,overflowY:"auto",maxHeight:"calc(100vh - 52px)"}}>
           {page==="dashboard"      && <AdminDash     ctx={ctx} setPage={setPage}/>}
           {page==="users"          && <UserMgmt      ctx={ctx}/>}
+          {page==="requests"       && <RequestsMgmt  ctx={ctx}/>}
           {page==="fleet"          && <FleetMgmt     ctx={ctx}/>}
           {page==="drivers"        && <DriverRoster  ctx={ctx}/>}
           {page==="inventory"      && <InventoryMgmt ctx={ctx}/>}
@@ -421,11 +427,12 @@ export default function AdminApp({ currentUser }){
 // ADMIN DASHBOARD
 // ══════════════════════════════════════════════════════════════
 function AdminDash({ctx,setPage}){
-  const {users,vehicles,drivers,inventory,crs}=ctx;
-  const activeUsers  = users.filter(u=>u.status==="active").length;
-  const availVeh     = vehicles.filter(v=>v.status==="available").length;
-  const lowStock     = inventory.filter(i=>i.stock<5).length;
-  const pendingCRs   = crs.filter(c=>["pending_line_manager","pending_secondary","change_review"].includes(c.status)).length;
+  const {users,vehicles,drivers,inventory,crs,requests}=ctx;
+  const activeUsers   = users.filter(u=>u.status==="active").length;
+  const availVeh      = vehicles.filter(v=>v.status==="available").length;
+  const lowStock      = inventory.filter(i=>i.stock<5).length;
+  const pendingCRs    = crs.filter(c=>["pending_line_manager","pending_secondary","change_review"].includes(c.status)).length;
+  const pendingReqs   = (requests||[]).filter(r=>r.status==="pending_approval").length;
 
   return (
     <div style={{display:"flex",flexDirection:"column",gap:20}}>
@@ -435,7 +442,7 @@ function AdminDash({ctx,setPage}){
       <div style={{display:"flex",gap:14,flexWrap:"wrap"}}>
         <StatCard label="Active Users"       value={activeUsers}  sub={`${users.length} total`}        color={C.blue}   icon="👥"/>
         <StatCard label="Fleet Available"    value={availVeh}     sub={`${vehicles.length} vehicles`}   color={C.green}  icon="🚗"/>
-        <StatCard label="Low Stock Items"    value={lowStock}     sub="Below 5 units"                   color={C.amber}  icon="📦"/>
+        <StatCard label="Pending Requests"   value={pendingReqs}  sub="Awaiting approval"               color={C.brand}  icon="📋" onClick={()=>setPage("requests")}/>
         <StatCard label="Pending CRs"        value={pendingCRs}   sub="Awaiting action"                 color={C.violet} icon="⟳"/>
       </div>
 
@@ -510,6 +517,275 @@ function AdminDash({ctx,setPage}){
         </table>
       </div>
     </div>
+  );
+}
+
+// ══════════════════════════════════════════════════════════════
+// FACILITY REQUESTS MANAGEMENT
+// ══════════════════════════════════════════════════════════════
+function RequestsMgmt({ctx}){
+  const {requests,setRequests,users,vehicles,drivers,addAudit,flash,uid}=ctx;
+  const [f,setF]       = useState({status:"",type:""});
+  const [selected,setSel] = useState(null);
+
+  const usersMap = {};
+  (users||[]).forEach(u=>{ usersMap[u.id]=u; });
+
+  const shown = (requests||[]).filter(r=>{
+    if(f.status && r.status!==f.status) return false;
+    if(f.type   && r.type!==f.type)     return false;
+    return true;
+  });
+
+  const actionReq = async (id, newStatus, note="") => {
+    try {
+      const req   = requests.find(r=>r.id===id);
+      const history = [...(req.history||[]), {s:newStatus, at:new Date().toISOString(), by:uid, note}];
+      const saved = await updateRequest(id, {status:newStatus, history, actioned_by:uid});
+      setRequests(p=>p.map(r=>r.id===id ? saved : r));
+      addAudit("REQUEST_"+newStatus.toUpperCase(), id, `Request ${id} → ${newStatus}`);
+      flash(`Request ${newStatus.replace(/_/g," ")}`);
+      setSel(null);
+    } catch(e){ flash(e.message,"error"); }
+  };
+
+  const assignVehicle = async (id, vehicleId, driverId) => {
+    try {
+      const req = requests.find(r=>r.id===id);
+      const history = [...(req.history||[]), {s:"assigned", at:new Date().toISOString(), by:uid, note:"Vehicle assigned"}];
+      const saved = await updateRequest(id, {
+        status:"approved",
+        history,
+        details: {...(req.details||{}), assigned_vehicle:vehicleId, assigned_driver:driverId}
+      });
+      setRequests(p=>p.map(r=>r.id===id ? saved : r));
+      addAudit("REQUEST_ASSIGNED", id, `Vehicle assigned to request ${id}`);
+      flash("Vehicle assigned successfully");
+      setSel(null);
+    } catch(e){ flash(e.message,"error"); }
+  };
+
+  const statusColor = s => ({
+    pending_approval:{bg:"#FFF7ED",color:"#D97706"},
+    approved:        {bg:"#ECFDF5",color:"#059669"},
+    rejected:        {bg:"#FEF2F2",color:"#DC2626"},
+    fulfilled:       {bg:"#EFF6FF",color:"#2563EB"},
+    cancelled:       {bg:"#F8FAFC",color:"#64748B"},
+  }[s]||{bg:"#F8FAFC",color:"#64748B"};
+
+  return (
+    <div style={{display:"flex",flexDirection:"column",gap:16}}>
+      <PageTitle title="Facility Requests" sub="All pool car and stationery requests from staff"
+        action={
+          <div style={{display:"flex",gap:8,alignItems:"center"}}>
+            <span style={{fontSize:12,color:C.muted}}>{shown.length} requests</span>
+          </div>
+        }
+      />
+
+      {/* Filters */}
+      <div style={{display:"flex",gap:10,flexWrap:"wrap"}}>
+        <select value={f.status} onChange={e=>setF(p=>({...p,status:e.target.value}))} style={{...inp(),width:160}}>
+          <option value="">All Statuses</option>
+          <option value="pending_approval">Pending Approval</option>
+          <option value="approved">Approved</option>
+          <option value="fulfilled">Fulfilled</option>
+          <option value="rejected">Rejected</option>
+        </select>
+        <select value={f.type} onChange={e=>setF(p=>({...p,type:e.target.value}))} style={{...inp(),width:160}}>
+          <option value="">All Types</option>
+          <option value="pool_car">Pool Car</option>
+          <option value="stationery">Stationery</option>
+        </select>
+      </div>
+
+      {/* Table */}
+      <div style={card(0)}>
+        <table style={{width:"100%",borderCollapse:"collapse"}}>
+          <TH cols={["ID","Type","Requested By","Title","Submitted","Status","Actions"]}/>
+          <tbody>
+            {shown.length===0 && (
+              <tr><td colSpan={7} style={{padding:"40px",textAlign:"center",color:C.muted,fontSize:13}}>
+                No requests found
+              </td></tr>
+            )}
+            {shown.map((r,i)=>{
+              const submitter = usersMap[r.submitted_by];
+              const sc = statusColor(r.status);
+              return (
+                <tr key={r.id} style={{borderBottom:i<shown.length-1?`1px solid #F1F5F9`:"none"}}>
+                  <td style={{padding:"11px 14px",fontSize:11,fontWeight:700,color:C.ink}}>{r.id}</td>
+                  <td style={{padding:"11px 14px"}}>
+                    <span style={{fontSize:11,fontWeight:600,color:C.ink,background:r.type==="pool_car"?"#EFF6FF":"#F0FDF4",padding:"3px 8px",borderRadius:5}}>
+                      {r.type==="pool_car"?"🚗 Pool Car":"✏️ Stationery"}
+                    </span>
+                  </td>
+                  <td style={{padding:"11px 14px"}}>
+                    <div style={{display:"flex",alignItems:"center",gap:8}}>
+                      <Av i={submitter?.initials||"?"} s={26}/>
+                      <div>
+                        <div style={{fontSize:12,fontWeight:600,color:C.ink}}>{submitter?.name||r.submitted_by}</div>
+                        <div style={{fontSize:10,color:C.muted}}>{submitter?.dept}</div>
+                      </div>
+                    </div>
+                  </td>
+                  <td style={{padding:"11px 14px",fontSize:12,color:C.ink,maxWidth:200}}>
+                    <div style={{overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{r.title}</div>
+                  </td>
+                  <td style={{padding:"11px 14px",fontSize:11,color:C.muted}}>
+                    {new Date(r.created_at).toLocaleDateString("en-GB",{day:"numeric",month:"short",year:"numeric"})}
+                  </td>
+                  <td style={{padding:"11px 14px"}}>
+                    <span style={{fontSize:11,fontWeight:700,padding:"3px 9px",borderRadius:20,background:sc.bg,color:sc.color}}>
+                      {r.status.replace(/_/g," ")}
+                    </span>
+                  </td>
+                  <td style={{padding:"11px 14px"}}>
+                    <button onClick={()=>setSel(r)} style={{...btn("ghost"),fontSize:11,padding:"4px 10px"}}>
+                      View →
+                    </button>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+
+      {/* Request Detail Modal */}
+      {selected && (
+        <RequestDetailModal
+          req={selected}
+          users={usersMap}
+          vehicles={vehicles||[]}
+          drivers={drivers||[]}
+          onClose={()=>setSel(null)}
+          onAction={actionReq}
+          onAssign={assignVehicle}
+        />
+      )}
+    </div>
+  );
+}
+
+function RequestDetailModal({req,users,vehicles,drivers,onClose,onAction,onAssign}){
+  const [note,   setNote]    = useState("");
+  const [vehId,  setVehId]   = useState("");
+  const [drvId,  setDrvId]   = useState("");
+  const [tab,    setTab]     = useState("details");
+  const submitter = users[req.submitted_by];
+  const isPending = req.status==="pending_approval";
+  const isCarReq  = req.type==="pool_car";
+  const availVeh  = vehicles.filter(v=>v.status==="available");
+  const availDrv  = drivers.filter(d=>d.status==="available");
+
+  return (
+    <Modal title={`Request: ${req.id}`} sub={req.title} onClose={onClose} w={600}>
+      {/* Tabs */}
+      <div style={{display:"flex",gap:0,borderBottom:`1px solid ${C.border}`,marginBottom:16}}>
+        {["details","history"].map(t=>(
+          <button key={t} onClick={()=>setTab(t)} style={{
+            padding:"8px 16px",border:"none",borderBottom:`2px solid ${tab===t?C.brand:"transparent"}`,
+            background:"transparent",fontSize:12,fontWeight:tab===t?700:500,
+            color:tab===t?C.brand:C.muted,cursor:"pointer",fontFamily:"inherit",textTransform:"capitalize"
+          }}>{t}</button>
+        ))}
+      </div>
+
+      {tab==="details" && (
+        <div style={{display:"flex",flexDirection:"column",gap:14}}>
+          {/* Submitter */}
+          <div style={{display:"flex",gap:12,alignItems:"center",padding:"12px",background:"#F8FAFC",borderRadius:8}}>
+            <Av i={submitter?.initials||"?"} s={36}/>
+            <div>
+              <div style={{fontSize:13,fontWeight:700,color:C.ink}}>{submitter?.name||"Unknown"}</div>
+              <div style={{fontSize:11,color:C.muted}}>{submitter?.dept} · {submitter?.email}</div>
+            </div>
+            <div style={{marginLeft:"auto",fontSize:11,color:C.muted}}>
+              {new Date(req.created_at).toLocaleDateString("en-GB",{day:"numeric",month:"short",year:"numeric",hour:"2-digit",minute:"2-digit"})}
+            </div>
+          </div>
+
+          {/* Request details */}
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
+            {Object.entries(req.details||{}).map(([k,v])=>(
+              <div key={k} style={{background:"#F8FAFC",borderRadius:7,padding:"10px 12px"}}>
+                <div style={{fontSize:10,fontWeight:700,color:C.muted,textTransform:"uppercase",letterSpacing:".06em",marginBottom:3}}>{k.replace(/_/g," ")}</div>
+                <div style={{fontSize:13,color:C.ink,fontWeight:500}}>{String(v)}</div>
+              </div>
+            ))}
+          </div>
+
+          {/* Vehicle assignment for pool car */}
+          {isPending && isCarReq && availVeh.length>0 && (
+            <div style={{border:`1px solid ${C.border}`,borderRadius:8,padding:14}}>
+              <div style={{fontSize:13,fontWeight:700,color:C.ink,marginBottom:12}}>🚗 Assign Vehicle & Driver</div>
+              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:12}}>
+                <div>
+                  <label style={LBL}>Vehicle</label>
+                  <select value={vehId} onChange={e=>setVehId(e.target.value)} style={inp()}>
+                    <option value="">Select vehicle…</option>
+                    {availVeh.map(v=><option key={v.id} value={v.id}>{v.plate} — {v.make} {v.model}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <label style={LBL}>Driver</label>
+                  <select value={drvId} onChange={e=>setDrvId(e.target.value)} style={inp()}>
+                    <option value="">Select driver…</option>
+                    {availDrv.map(d=><option key={d.id} value={d.id}>{d.name}</option>)}
+                  </select>
+                </div>
+              </div>
+              <button
+                onClick={()=>vehId&&onAssign(req.id,vehId,drvId)}
+                disabled={!vehId}
+                style={{...btn("primary"),opacity:vehId?1:.5}}
+              >Assign & Approve →</button>
+            </div>
+          )}
+
+          {/* Note field */}
+          {isPending && (
+            <div>
+              <label style={LBL}>Note (optional)</label>
+              <textarea value={note} onChange={e=>setNote(e.target.value)}
+                placeholder="Add a note for the requester…"
+                style={{...inp(),height:70,resize:"vertical"}}/>
+            </div>
+          )}
+        </div>
+      )}
+
+      {tab==="history" && (
+        <div style={{display:"flex",flexDirection:"column",gap:8}}>
+          {(req.history||[]).length===0 && <div style={{color:C.muted,fontSize:13}}>No history yet.</div>}
+          {(req.history||[]).map((h,i)=>(
+            <div key={i} style={{display:"flex",gap:10,alignItems:"flex-start",padding:"10px 12px",background:"#F8FAFC",borderRadius:7}}>
+              <div style={{width:8,height:8,borderRadius:"50%",background:C.brand,marginTop:4,flexShrink:0}}/>
+              <div>
+                <div style={{fontSize:12,fontWeight:700,color:C.ink,textTransform:"capitalize"}}>{h.s.replace(/_/g," ")}</div>
+                {h.note&&<div style={{fontSize:11,color:C.muted,marginTop:2}}>{h.note}</div>}
+                <div style={{fontSize:10,color:C.muted,marginTop:2}}>{new Date(h.at).toLocaleString("en-GB")}</div>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Action buttons */}
+      <div style={{display:"flex",justifyContent:"flex-end",gap:8,marginTop:18,paddingTop:14,borderTop:`1px solid ${C.border}`}}>
+        <button onClick={onClose} style={btn("ghost")}>Close</button>
+        {isPending && !isCarReq && (
+          <>
+            <button onClick={()=>onAction(req.id,"rejected",note)} style={btn("danger")}>Reject</button>
+            <button onClick={()=>onAction(req.id,"approved",note)} style={btn("primary")}>Approve →</button>
+          </>
+        )}
+        {req.status==="approved" && (
+          <button onClick={()=>onAction(req.id,"fulfilled",note)} style={btn("primary")}>Mark Fulfilled ✓</button>
+        )}
+      </div>
+    </Modal>
   );
 }
 
