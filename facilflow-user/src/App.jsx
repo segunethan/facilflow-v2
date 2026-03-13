@@ -679,27 +679,36 @@ function MyRequests({ctx}){
       ]}/>
       <div style={card(0)}>
         <table style={{width:"100%",borderCollapse:"collapse"}}>
-          <TH cols={["Request ID","Type","Title","Submitted","Status",""]}/>
+          <TH cols={["Request ID","Type","Title / Items","Date Requested","Approved On","Status",""]}/>
           <tbody>
             {shown.length===0
-              ?<tr><td colSpan={6}><Empty icon="📭" title="No requests yet" sub="Use the buttons above to submit"/></td></tr>
-              :shown.map((r,i)=>(
-              <tr key={r.id} style={{borderBottom:i<shown.length-1?`1px solid #FAFAFA`:"none",cursor:"pointer"}}
-                onClick={()=>setDetail(r)}>
-                <td style={{padding:"11px 14px",fontSize:11,fontWeight:700,color:C.ink}}>{r.id}</td>
-                <td style={{padding:"11px 14px"}}>
-                  <span style={{fontSize:11,fontWeight:600,padding:"2px 8px",borderRadius:4,
-                    background:r.type==="pool_car"?C.brandLt:C.blueBg,
-                    color:r.type==="pool_car"?C.brand:C.blue}}>
-                    {r.type==="pool_car"?"Pool Car":"Stationery"}
-                  </span>
-                </td>
-                <td style={{padding:"11px 14px",fontSize:13,color:C.ink}}>{r.title}</td>
-                <td style={{padding:"11px 14px",fontSize:11,color:C.muted,whiteSpace:"nowrap"}}>{fmtD(r.created_at)}</td>
-                <td style={{padding:"11px 14px"}}><RQChip s={r.status}/></td>
-                <td style={{padding:"11px 14px",color:C.muted,fontSize:16}}>›</td>
-              </tr>
-            ))}
+              ?<tr><td colSpan={7}><Empty icon="📭" title="No requests yet" sub="Use the buttons above to submit"/></td></tr>
+              :shown.map((r,i)=>{
+                const approvedAt = r.approved_at ? fmtD(r.approved_at) : (r.history||[]).find(h=>h.s==="approved")?.at ? fmtD((r.history||[]).find(h=>h.s==="approved").at) : "—";
+                const itemsSummary = r.type!=="pool_car" && r.details?.items
+                  ? (r.details.items||[]).map(it=>{ const inv=invItems.find(x=>x.id===it.id); return `${inv?.name||it.id} ×${it.qty}`; }).join(", ")
+                  : r.details?.destination || "";
+                return (
+                <tr key={r.id} style={{borderBottom:i<shown.length-1?`1px solid #FAFAFA`:"none",cursor:"pointer"}}
+                  onClick={()=>setDetail(r)}>
+                  <td style={{padding:"11px 14px",fontSize:11,fontWeight:700,color:C.ink}}>{r.id}</td>
+                  <td style={{padding:"11px 14px"}}>
+                    <span style={{fontSize:11,fontWeight:600,padding:"2px 8px",borderRadius:4,
+                      background:r.type==="pool_car"?C.brandLt:C.blueBg,
+                      color:r.type==="pool_car"?C.brand:C.blue}}>
+                      {r.type==="pool_car"?"🚗 Pool Car":"✏️ Stationery"}
+                    </span>
+                  </td>
+                  <td style={{padding:"11px 14px",maxWidth:220}}>
+                    <div style={{fontSize:13,color:C.ink,fontWeight:500,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{r.title}</div>
+                    {itemsSummary&&<div style={{fontSize:10,color:C.muted,marginTop:2,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{itemsSummary}</div>}
+                  </td>
+                  <td style={{padding:"11px 14px",fontSize:11,color:C.muted,whiteSpace:"nowrap"}}>{fmtD(r.created_at)}</td>
+                  <td style={{padding:"11px 14px",fontSize:11,color:C.muted,whiteSpace:"nowrap"}}>{approvedAt}</td>
+                  <td style={{padding:"11px 14px"}}><RQChip s={r.status}/></td>
+                  <td style={{padding:"11px 14px",color:C.muted,fontSize:16}}>›</td>
+                </tr>
+              )})}
           </tbody>
         </table>
       </div>
@@ -711,44 +720,63 @@ function MyRequests({ctx}){
 }
 
 function PoolCarForm({onClose,onSubmit}){
-  const [v,setV]=useState({title:"",pickup:"",dest:"",date:"",start:"09:00",end:"17:00",pax:1,purpose:""});
-  const [e,setE]=useState({});
-  const s=(k,val)=>setV(p=>({...p,[k]:val}));
+  const [title,  setTitle]  = useState("");
+  const [pickup, setPickup] = useState("");
+  const [dest,   setDest]   = useState("");
+  const [date,   setDate]   = useState("");
+  const [start,  setStart]  = useState("09:00");
+  const [end,    setEnd]    = useState("17:00");
+  const [pax,    setPax]    = useState(1);
+  const [purpose,setPurpose]= useState("");
+  const [errs,   setErrs]   = useState({});
+
   const go=()=>{
     const er={};
-    if(!v.title)er.title="Required";if(!v.pickup)er.pickup="Required";
-    if(!v.dest)er.dest="Required";if(!v.date)er.date="Required";if(!v.purpose)er.purpose="Required";
-    setE(er);if(Object.keys(er).length)return;
-    onSubmit({type:"pool_car",title:v.title,details:{pickup:v.pickup,destination:v.dest,date:v.date,start:v.start,end:v.end,passengers:v.pax,purpose:v.purpose}});
+    if(!title)  er.title="Required";
+    if(!pickup) er.pickup="Required";
+    if(!dest)   er.dest="Required";
+    if(!date)   er.date="Required";
+    if(!purpose)er.purpose="Required";
+    setErrs(er);
+    if(Object.keys(er).length) return;
+    onSubmit({type:"pool_car",title,details:{pickup,destination:dest,date,start,end,passengers:pax,purpose}});
     onClose();
   };
-  const F=({label,k,type="text",ph,span})=>(
-    <div style={span?{gridColumn:"1/-1"}:{}}>
-      <label style={LBL}>{label}{e[k]&&<span style={{color:C.red,fontWeight:400,textTransform:"none"}}> · {e[k]}</span>}</label>
-      <input type={type} value={v[k]} onChange={ev=>s(k,ev.target.value)} placeholder={ph}
-        style={inp(!!e[k])}/>
-    </div>
-  );
   return (
     <Modal title="Pool Car Request" onClose={onClose} w={580}>
       <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:14}}>
-        <F label="Title" k="title" ph="e.g. Client Visit – Victoria Island" span/>
-        <F label="Pickup" k="pickup" ph="AP Head Office"/>
-        <F label="Destination" k="dest" ph="Victoria Island Branch"/>
-        <F label="Date" k="date" type="date"/>
-        <div style={{display:"flex",gap:8}}>
-          <div style={{flex:1}}><label style={LBL}>Start</label><input type="time" value={v.start} onChange={e=>s("start",e.target.value)} style={inp()}/></div>
-          <div style={{flex:1}}><label style={LBL}>End</label><input type="time" value={v.end} onChange={e=>s("end",e.target.value)} style={inp()}/></div>
-        </div>
-        <div><label style={LBL}>Passengers</label><input type="number" min={1} max={6} value={v.pax} onChange={e=>s("pax",+e.target.value)} style={inp()}/></div>
         <div style={{gridColumn:"1/-1"}}>
-          <label style={LBL}>Purpose{e.purpose&&<span style={{color:C.red,fontWeight:400,textTransform:"none"}}> · {e.purpose}</span>}</label>
-          <textarea value={v.purpose} onChange={e=>s("purpose",e.target.value)} style={{...inp(),minHeight:68,resize:"vertical"}} placeholder="Business purpose..."/>
+          <label style={LBL}>Title{errs.title&&<span style={{color:C.red,fontWeight:400,textTransform:"none"}}> · {errs.title}</span>}</label>
+          <input value={title} onChange={e=>setTitle(e.target.value)} placeholder="e.g. Client Visit – Victoria Island" style={inp(!!errs.title)}/>
+        </div>
+        <div>
+          <label style={LBL}>Pickup Location{errs.pickup&&<span style={{color:C.red,fontWeight:400,textTransform:"none"}}> · {errs.pickup}</span>}</label>
+          <input value={pickup} onChange={e=>setPickup(e.target.value)} placeholder="AP Head Office" style={inp(!!errs.pickup)}/>
+        </div>
+        <div>
+          <label style={LBL}>Destination{errs.dest&&<span style={{color:C.red,fontWeight:400,textTransform:"none"}}> · {errs.dest}</span>}</label>
+          <input value={dest} onChange={e=>setDest(e.target.value)} placeholder="Victoria Island Branch" style={inp(!!errs.dest)}/>
+        </div>
+        <div>
+          <label style={LBL}>Date{errs.date&&<span style={{color:C.red,fontWeight:400,textTransform:"none"}}> · {errs.date}</span>}</label>
+          <input type="date" value={date} onChange={e=>setDate(e.target.value)} style={inp(!!errs.date)}/>
+        </div>
+        <div style={{display:"flex",gap:8}}>
+          <div style={{flex:1}}><label style={LBL}>Start Time</label><input type="time" value={start} onChange={e=>setStart(e.target.value)} style={inp()}/></div>
+          <div style={{flex:1}}><label style={LBL}>End Time</label><input type="time" value={end} onChange={e=>setEnd(e.target.value)} style={inp()}/></div>
+        </div>
+        <div>
+          <label style={LBL}>Passengers</label>
+          <input type="number" min={1} max={6} value={pax} onChange={e=>setPax(+e.target.value)} style={inp()}/>
+        </div>
+        <div style={{gridColumn:"1/-1"}}>
+          <label style={LBL}>Purpose{errs.purpose&&<span style={{color:C.red,fontWeight:400,textTransform:"none"}}> · {errs.purpose}</span>}</label>
+          <textarea value={purpose} onChange={e=>setPurpose(e.target.value)} style={{...inp(),minHeight:68,resize:"vertical"}} placeholder="Business purpose for this trip..."/>
         </div>
       </div>
       <div style={{display:"flex",justifyContent:"flex-end",gap:8,marginTop:18,paddingTop:16,borderTop:`1px solid ${C.border}`}}>
         <button onClick={onClose} style={btn("ghost")}>Cancel</button>
-        <button onClick={go}      style={btn("primary")}>Submit</button>
+        <button onClick={go} style={btn("primary")}>Submit Request</button>
       </div>
     </Modal>
   );
@@ -804,60 +832,107 @@ function StatForm({onClose,onSubmit,invItems=[]}){
 }
 
 function ReqDetail({req,onClose,ctx}){
-  const {uid,transReq,me}=ctx;
+  const {uid,transReq,me,invItems,users,vehicles,drivers}=ctx;
   const [note,setNote]=useState("");
+  const [tab,setTab]=useState("details");
   const canApprove  = me.role==="manager"       && req.status==="pending_approval";
   const canProcess  = me.role==="resource_team" && req.status==="approved";
   const canComplete = me.role==="resource_team" && req.status==="in_progress";
-  return (
-    <Modal title={req.id} sub={req.title} onClose={onClose} w={680}>
-      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:20}}>
-        <div>
-          <div style={{display:"flex",gap:10,alignItems:"center",marginBottom:14}}>
-            <RQChip s={req.status}/>
-            <span style={{fontSize:11,color:C.muted}}>{users[req.submittedBy]?.name} · {fmtD(req.submittedAt)}</span>
-          </div>
-          <div style={{background:C.pageBg,borderRadius:8,padding:14}}>
-            {Object.entries(req.details||{}).map(([k,v])=>(
-              <div key={k} style={{marginBottom:8}}>
-                <div style={{fontSize:10,fontWeight:700,color:C.muted,textTransform:"uppercase",letterSpacing:".07em",marginBottom:2}}>{k}</div>
-                <div style={{fontSize:12,color:C.ink,fontWeight:500}}>
-                  {Array.isArray(v)?v.map(i=>`${invItems.find(x=>x.id===i.id)?.name||i.id} × ${i.qty}`).join(", "):String(v)}
-                </div>
+
+  const assignedVeh = req.assigned_vehicle ? (vehicles||[]).find(v=>v.id===req.assigned_vehicle) : null;
+  const assignedDrv = req.assigned_driver  ? (drivers||[]).find(d=>d.id===req.assigned_driver)  : null;
+
+  const renderDetails = () => {
+    if(req.type==="pool_car"){
+      const d = req.details||{};
+      return (
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
+          {[["Pickup",d.pickup],["Destination",d.destination],["Date",d.date],["Time",`${d.start||""} – ${d.end||""}`],["Passengers",d.passengers],["Purpose",d.purpose]].map(([k,v])=>v?(
+            <div key={k} style={{background:C.pageBg,borderRadius:7,padding:"10px 12px",gridColumn:k==="Purpose"?"1/-1":"auto"}}>
+              <div style={{fontSize:10,fontWeight:700,color:C.muted,textTransform:"uppercase",letterSpacing:".06em",marginBottom:3}}>{k}</div>
+              <div style={{fontSize:13,color:C.ink,fontWeight:500}}>{String(v)}</div>
+            </div>
+          ):null)}
+          {assignedVeh&&(
+            <div style={{gridColumn:"1/-1",background:"#ECFDF5",border:"1px solid #059669",borderRadius:8,padding:12}}>
+              <div style={{fontSize:11,fontWeight:700,color:"#059669",marginBottom:6}}>✅ Vehicle Assigned</div>
+              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
+                <div><div style={{fontSize:10,color:"#059669",fontWeight:700,marginBottom:2}}>VEHICLE</div><div style={{fontSize:13,color:C.ink,fontWeight:600}}>{assignedVeh.plate} — {assignedVeh.model}</div></div>
+                {assignedDrv&&<div><div style={{fontSize:10,color:"#059669",fontWeight:700,marginBottom:2}}>DRIVER</div><div style={{fontSize:13,color:C.ink,fontWeight:600}}>{assignedDrv.name} · {assignedDrv.phone}</div></div>}
               </div>
-            ))}
-          </div>
-          {(canApprove||canProcess||canComplete)&&(
-            <div style={{marginTop:12}}>
-              <label style={LBL}>Comment (optional)</label>
-              <textarea value={note} onChange={e=>setNote(e.target.value)} style={{...inp(),minHeight:56,resize:"vertical"}} placeholder="Add a note…"/>
             </div>
           )}
         </div>
-        <div>
-          <label style={LBL}>Timeline</label>
-          <div style={{position:"relative",paddingLeft:20}}>
-            <div style={{position:"absolute",left:7,top:6,bottom:6,width:2,background:C.border}}/>
-            {req.history.map((h,i)=>{
-              const m=REQ_STATUS[h.s]||{color:C.muted};
-              return (
-                <div key={i} style={{position:"relative",marginBottom:14}}>
-                  <div style={{position:"absolute",left:-17,width:10,height:10,borderRadius:"50%",
-                    background:m.color,border:"2px solid #fff",top:2}}/>
-                  <div style={{fontSize:11,fontWeight:600,color:m.color,textTransform:"capitalize"}}>{h.s.replace(/_/g," ")}</div>
-                  <div style={{fontSize:10,color:C.muted}}>{fmtDT(h.at)} · {users[h.by]?.name||h.by}</div>
-                  {h.note&&<div style={{fontSize:11,color:C.ink2,marginTop:2,fontStyle:"italic"}}>"{h.note}"</div>}
-                </div>
-              );
-            })}
-          </div>
+      );
+    }
+    // Stationery
+    const d = req.details||{};
+    const itemsList = (d.items||[]).map(it=>{ const inv=invItems.find(x=>x.id===it.id); return {name:inv?.name||it.id,qty:it.qty,unit:inv?.unit||"unit"}; });
+    return (
+      <div style={{display:"flex",flexDirection:"column",gap:10}}>
+        {d.urgency&&<div style={{background:C.pageBg,borderRadius:7,padding:"10px 12px"}}><div style={{fontSize:10,fontWeight:700,color:C.muted,textTransform:"uppercase",letterSpacing:".06em",marginBottom:3}}>Urgency</div><div style={{fontSize:13,color:C.ink,fontWeight:500,textTransform:"capitalize"}}>{d.urgency}</div></div>}
+        <div style={{background:C.pageBg,borderRadius:7,padding:"10px 12px"}}>
+          <div style={{fontSize:10,fontWeight:700,color:C.muted,textTransform:"uppercase",letterSpacing:".06em",marginBottom:8}}>Items Requested</div>
+          {itemsList.map((it,i)=>(
+            <div key={i} style={{display:"flex",justifyContent:"space-between",padding:"6px 0",borderBottom:i<itemsList.length-1?`1px solid ${C.border}`:"none"}}>
+              <span style={{fontSize:13,color:C.ink}}>{it.name}</span>
+              <span style={{fontSize:12,fontWeight:700,color:C.ink}}>{it.qty} {it.unit}s</span>
+            </div>
+          ))}
         </div>
+        {d.notes&&<div style={{background:C.pageBg,borderRadius:7,padding:"10px 12px"}}><div style={{fontSize:10,fontWeight:700,color:C.muted,textTransform:"uppercase",letterSpacing:".06em",marginBottom:3}}>Notes</div><div style={{fontSize:13,color:C.ink}}>{d.notes}</div></div>}
       </div>
+    );
+  };
+
+  return (
+    <Modal title={req.id} sub={req.title} onClose={onClose} w={700}>
+      {/* Status bar */}
+      <div style={{display:"flex",gap:10,alignItems:"center",marginBottom:16,padding:"10px 12px",background:C.pageBg,borderRadius:8}}>
+        <RQChip s={req.status}/>
+        <span style={{fontSize:11,color:C.muted}}>Submitted {fmtD(req.created_at)}</span>
+        {req.approved_at&&<span style={{fontSize:11,color:C.muted}}>· Approved {fmtD(req.approved_at)}</span>}
+        {req.delivered_at&&<span style={{fontSize:11,color:"#059669",fontWeight:600}}>· Delivered {fmtD(req.delivered_at)}</span>}
+      </div>
+
+      {/* Tabs */}
+      <div style={{display:"flex",gap:0,borderBottom:`1px solid ${C.border}`,marginBottom:16}}>
+        {["details","timeline"].map(t=>(
+          <button key={t} onClick={()=>setTab(t)} style={{padding:"8px 16px",border:"none",borderBottom:`2px solid ${tab===t?C.brand:"transparent"}`,background:"transparent",fontSize:12,fontWeight:tab===t?700:500,color:tab===t?C.brand:C.muted,cursor:"pointer",fontFamily:"inherit",textTransform:"capitalize"}}>{t}</button>
+        ))}
+      </div>
+
+      {tab==="details" && renderDetails()}
+
+      {tab==="timeline"&&(
+        <div style={{position:"relative",paddingLeft:20}}>
+          <div style={{position:"absolute",left:7,top:6,bottom:6,width:2,background:C.border}}/>
+          {(req.history||[]).map((h,i)=>{
+            const m=REQ_STATUS[h.s]||{color:C.muted};
+            return (
+              <div key={i} style={{position:"relative",marginBottom:14}}>
+                <div style={{position:"absolute",left:-17,width:10,height:10,borderRadius:"50%",background:m.color,border:"2px solid #fff",top:2}}/>
+                <div style={{fontSize:11,fontWeight:600,color:m.color,textTransform:"capitalize"}}>{h.s.replace(/_/g," ")}</div>
+                <div style={{fontSize:10,color:C.muted}}>{fmtDT(h.at)} · {users[h.by]?.name||"System"}</div>
+                {h.note&&<div style={{fontSize:11,color:C.ink2,marginTop:2,fontStyle:"italic"}}>"{h.note}"</div>}
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {(canApprove||canProcess||canComplete)&&(
+        <div style={{marginTop:14}}>
+          <label style={LBL}>Comment (optional)</label>
+          <textarea value={note} onChange={e=>setNote(e.target.value)} style={{...inp(),minHeight:52,resize:"vertical"}} placeholder="Add a note…"/>
+        </div>
+      )}
+
       <div style={{display:"flex",justifyContent:"flex-end",gap:8,marginTop:18,paddingTop:16,borderTop:`1px solid ${C.border}`}}>
         {canApprove&&<><button onClick={()=>{transReq(req.id,"rejected",note);onClose()}} style={btn("ghost")}>Reject</button>
           <button onClick={()=>{transReq(req.id,"approved",note);onClose()}} style={btn("success")}>✓ Approve</button></>}
         {canProcess&&<button onClick={()=>{transReq(req.id,"in_progress");onClose()}} style={btn("primary")}>▶ Process</button>}
-        {canComplete&&<button onClick={()=>{transReq(req.id,"completed");onClose()}} style={btn("success")}>✓ Complete</button>}
+        {canComplete&&<button onClick={()=>{transReq(req.id,"completed");onClose()}} style={btn("success")}>✓ Mark Complete</button>}
         <button onClick={onClose} style={btn("ghost")}>Close</button>
       </div>
     </Modal>
