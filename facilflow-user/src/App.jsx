@@ -378,8 +378,14 @@ export default function UserApp({ currentUser }){
       const count = crs.length + 1;
       const id    = `CR-${String(count).padStart(6,"0")}`;
 
-      // Get change manager from tenant config
-      const managerId = tenantConfig?.change_manager_id || null;
+      // Get change manager — always fetch fresh from DB to avoid stale state
+      let managerId = tenantConfig?.change_manager_id || null;
+      if(!managerId){
+        try {
+          const {data:freshConfig} = await supabase.from("change_tenant_config").select("change_manager_id").eq("tenant_id",tenantId).single();
+          managerId = freshConfig?.change_manager_id || null;
+        } catch(ce){ console.warn("Could not fetch tenant config:", ce.message); }
+      }
 
       // Build approval stages from configured levels that apply to this change type
       const applicableLevels = (approvalLevels||[]).filter(l=>
@@ -431,19 +437,21 @@ export default function UserApp({ currentUser }){
 
       const saved = await createCR(rec);
       setCrs(p=>[normCR(saved),...p]);
-      flash(`${id} submitted to Change Manager`);
 
-      // Notify change manager — fetch email directly if not in users map
+      if(!managerId){
+        flash(`${id} submitted — ⚠ No Change Manager configured. Go to Admin → CR Policy to set one.`, "error");
+        return;
+      }
+      flash(`${id} submitted — notifying Change Manager...`);
+
+      // Notify change manager — always fetch fresh from DB
       if(managerId){
         try {
-          let mgrEmail = users[managerId]?.email;
-          if(!mgrEmail){
-            // Fallback: fetch directly from DB
-            const {data:mgrRow} = await supabase.from("users").select("email,name").eq("id",managerId).single();
-            mgrEmail = mgrRow?.email;
-          }
+          const {data:mgrRow} = await supabase.from("users").select("email,name").eq("id",managerId).single();
+          const mgrEmail = mgrRow?.email;
+          const mgrName  = mgrRow?.name||"Change Manager";
           if(mgrEmail){
-            await supabase.functions.invoke("send-email",{body:{
+            const emailResult = await supabase.functions.invoke("send-email",{body:{
               template:"cr_stage_notification",
               to: mgrEmail,
               data:{
@@ -451,12 +459,17 @@ export default function UserApp({ currentUser }){
                 title:   data.title,
                 stage:   "Change Manager Review",
                 subject: `${id} - ${data.title} - Change Manager Review`,
-                action:  "A new change request has been submitted and requires your review and approval.",
+                action:  `Hi ${mgrName}, a new change request has been submitted and requires your review and approval.`,
                 app_url: "https://facilflowuser.vercel.app",
               }
             }});
+            if(emailResult.error) flash(`CR submitted but email failed: ${emailResult.error.message}`, "error");
+          } else {
+            flash("CR submitted — no email sent (change manager has no email address)", "error");
           }
-        } catch(ne){ console.warn("CR submission email failed:", ne.message); }
+        } catch(ne){ flash(`CR submitted but email error: ${ne.message}`, "error"); }
+      } else {
+        flash("CR submitted — no Change Manager configured. Set one in admin CR Policy.", "error");
       }
 
     } catch(e){ flash(e.message,"error"); }
@@ -550,60 +563,85 @@ export default function UserApp({ currentUser }){
 
       // Send stage notification emails — level-based, backward notification
       try {
-        const emailRecipients = []; // accumulate: [current stage] + [all previous]
+        const emailRecipients = [];
         const appUrl = "https://facilflowuser.vercel.app";
 
-        // Always include technician (backward visibility)
-        const tech = users[saved.initiator];
-        if(tech?.email) emailRecipients.push({email:tech.email, role:"Technician"});
+        // Helper: fetch user email from DB directly
+        const getEmail = async (userId) => {
+          if(!userId) return null;
+          if(users[userId]?.email) return users[userId].email;
+          const {data:u} = await supabase.from("users").select("email,name").eq("id",userId).single();
+          return u?.email||null;
+        };
 
-        // Always include change manager (backward visibility once approved)
-        const mgr = users[saved.change_manager_id];
-        if(mgr?.email && action!=="approve_manager" && action!=="reject") {
-          emailRecipients.push({email:mgr.email, role:"Change Manager"});
-        }
+        // Helper: fetch all users with a role key
+        const getRoleEmails = async (roleKey) => {
+          const cached = (crUsers||{})[roleKey]||[];
+          if(cached.length>0) return cached.map(u=>u.email).filter(Boolean);
+          const {data:ucr} = await supabase.from("user_change_roles")
+            .select("user_id, users(email)")
+            .eq("role_key",roleKey).eq("tenant_id",tenantId);
+          return (ucr||[]).map(r=>r.users?.email).filter(Boolean);
+        };
+
+        // Always notify technician (backward visibility)
+        const techEmail = await getEmail(saved.initiator);
+        if(techEmail) emailRecipients.push(techEmail);
 
         let stageLabel = "";
-        let currentEmail = null;
 
         if(action==="approve_manager"){
-          // Manager approved → notify L1 approver (or implementer if no levels)
-          stageLabel = `Level ${saved.current_level||1} Approval`;
-          const nextLevel = (saved.level_approvals||[])[0];
-          if(nextLevel?.role_key){
-            const approvers = (crUsers||{})[nextLevel.role_key]||[];
-            approvers.forEach(a=>{ if(a?.email) emailRecipients.push({email:a.email,role:stageLabel}); });
-          }
-          if((saved.level_approvals||[]).length===0){
-            stageLabel="Implementation";
-            const impls=(crUsers||{})["change_implementer"]||[];
-            impls.forEach(a=>{ if(a?.email) emailRecipients.push({email:a.email,role:"Implementer"}); });
-          }
-        } else if(action==="approve_level"){
-          const nextLevelObj=(saved.level_approvals||[]).find(l=>l.level===saved.current_level);
-          if(nextLevelObj){
-            stageLabel=nextLevelObj.name;
-            const approvers=(crUsers||{})[nextLevelObj.role_key]||[];
-            approvers.forEach(a=>{ if(a?.email) emailRecipients.push({email:a.email,role:stageLabel}); });
+          // Manager approved → send to L1 approvers (or implementers if no levels)
+          const levels = saved.level_approvals||[];
+          if(levels.length>0){
+            stageLabel = levels[0].name||"Level 1 Approval";
+            const approverEmails = await getRoleEmails(levels[0].role_key);
+            approverEmails.forEach(e=>emailRecipients.push(e));
           } else {
-            stageLabel="Implementation";
-            const impls=(crUsers||{})["change_implementer"]||[];
-            impls.forEach(a=>{ if(a?.email) emailRecipients.push({email:a.email,role:"Implementer"}); });
+            stageLabel = "Implementation";
+            const implEmails = await getRoleEmails("change_implementer");
+            implEmails.forEach(e=>emailRecipients.push(e));
           }
-        } else if(action==="reject"){
-          stageLabel="Rejected";
-          // Only notify technician (already added above)
-          if(mgr?.email) emailRecipients.push({email:mgr.email,role:"Change Manager"});
-        } else if(action==="start_implementation"){
-          stageLabel="Implementation Started";
-        } else if(action==="complete_implementation"){
-          stageLabel=saved.implementation_outcome==="failed"?"Implementation Failed":"Implementation Completed";
+          // Also notify technician that manager approved
+          const mgrEmail = await getEmail(saved.change_manager_id);
+          if(mgrEmail) emailRecipients.push(mgrEmail);
+        }
+        else if(action==="approve_level"){
+          const levels = saved.level_approvals||[];
+          const nextLevel = levels.find(l=>l.level===saved.current_level);
+          if(nextLevel){
+            stageLabel = nextLevel.name||`Level ${saved.current_level} Approval`;
+            const approverEmails = await getRoleEmails(nextLevel.role_key);
+            approverEmails.forEach(e=>emailRecipients.push(e));
+          } else {
+            stageLabel = "Implementation";
+            const implEmails = await getRoleEmails("change_implementer");
+            implEmails.forEach(e=>emailRecipients.push(e));
+          }
+          // Backward: notify manager + previous level approvers
+          const mgrEmail = await getEmail(saved.change_manager_id);
+          if(mgrEmail) emailRecipients.push(mgrEmail);
+        }
+        else if(action==="reject"){
+          stageLabel = "Rejected";
+          const mgrEmail = await getEmail(saved.change_manager_id);
+          if(mgrEmail) emailRecipients.push(mgrEmail);
+        }
+        else if(action==="start_implementation"){
+          stageLabel = "Implementation Started";
+          const mgrEmail = await getEmail(saved.change_manager_id);
+          if(mgrEmail) emailRecipients.push(mgrEmail);
+        }
+        else if(action==="complete_implementation"){
+          stageLabel = saved.implementation_outcome==="failed"?"Implementation Failed":"Implementation Completed";
+          const mgrEmail = await getEmail(saved.change_manager_id);
+          if(mgrEmail) emailRecipients.push(mgrEmail);
         }
 
         // Deduplicate and send
-        const uniqueEmails=[...new Set(emailRecipients.map(r=>r.email))].filter(Boolean);
+        const uniqueEmails=[...new Set(emailRecipients)].filter(Boolean);
         if(uniqueEmails.length>0 && stageLabel){
-          await supabase.functions.invoke("send-email",{body:{
+          const emailRes = await supabase.functions.invoke("send-email",{body:{
             template:"cr_stage_notification",
             to: uniqueEmails,
             data:{
@@ -613,13 +651,14 @@ export default function UserApp({ currentUser }){
               subject: `${saved.id} - ${saved.title} - ${stageLabel}`,
               action:  action==="reject"
                 ? "This change request has been rejected. Please review and raise a new CR if needed."
-                : `The change request has progressed to: ${stageLabel}. Please review and take action if required.`,
+                : `Action required: The change request has progressed to ${stageLabel}.`,
               note:    note||"",
               app_url: appUrl,
             }
           }});
+          if(emailRes?.error) flash(`CR updated but email failed: ${emailRes.error.message}`, "error");
         }
-      } catch(ne){ console.warn("Stage notification failed:", ne.message); }
+      } catch(ne){ flash(`CR updated but notification error: ${ne.message}`, "error"); }
 
     } catch(e){ flash(e.message,"error"); }
   },[crs, uid, flash, users, crUsers]);
