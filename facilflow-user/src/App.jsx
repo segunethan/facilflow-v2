@@ -1229,34 +1229,69 @@ function ChangePage({ctx}){
 
 // ── CR Form ────────────────────────────────────────────────────
 function CRForm({onClose,onSubmit}){
-  const [step,setStep]=useState(1);
-  const [d,setD]=useState({title:"",desc:"",system:"",environment:"Staging",deployDate:"",deployStart:"22:00",deployEnd:"02:00",changeType:"Normal",riskLevel:"Medium",category:"Infrastructure",rollback:"",testEvidence:""});
-  const [e,setE]=useState({});
-  const s=(k,v)=>setD(p=>({...p,[k]:v}));
-  const v1=()=>{const er={};if(!d.title)er.title="Required";if(!d.desc)er.desc="Required";if(!d.system)er.system="Required";if(!d.deployDate)er.deployDate="Required";setE(er);return!Object.keys(er).length;};
-  const v2=()=>{const er={};if(!d.rollback)er.rollback="Required";if(!d.testEvidence)er.testEvidence="Required";setE(er);return!Object.keys(er).length;};
+  const [step,      setStep]      = useState(1);
+  const [title,     setTitle]     = useState("");
+  const [desc,      setDesc]      = useState("");
+  const [system,    setSystem]    = useState("");
+  const [environment, setEnv]     = useState("Staging");
+  const [deployDate,setDeployDate]= useState("");
+  const [deployStart,setDStart]   = useState("22:00");
+  const [deployEnd,  setDEnd]     = useState("02:00");
+  const [changeType, setCType]    = useState("Normal");
+  const [riskLevel,  setRisk]     = useState("Medium");
+  const [category,   setCat]      = useState("Infrastructure");
+  const [rollback,   setRollback] = useState("");
+  const [testEvidence,setTest]    = useState("");
+  const [attachments,setAttach]   = useState([]);
+  const [errs,       setErrs]     = useState({});
 
-  const STEPS=["Request Details","Risk & Rollback","Review & Submit"];
-  const Sel=({label,k,opts})=>(
-    <div><label style={LBL}>{label}</label>
-      <select value={d[k]} onChange={ev=>s(k,ev.target.value)} style={inp()}>{opts.map(o=><option key={o} value={o}>{o}</option>)}</select>
-    </div>
-  );
-  const Txt=({label,k,ph,ta,span})=>(
-    <div style={span?{gridColumn:"1/-1"}:{}}>
-      <label style={LBL}>{label}{e[k]&&<span style={{color:C.red,fontWeight:400,textTransform:"none"}}> · {e[k]}</span>}</label>
-      {ta?<textarea value={d[k]} onChange={ev=>s(k,ev.target.value)} style={{...inp(!!e[k]),minHeight:78,resize:"vertical"}} placeholder={ph}/>
-         :<input value={d[k]} onChange={ev=>s(k,ev.target.value)} style={inp(!!e[k])} placeholder={ph}/>}
-    </div>
-  );
+  const validate1 = () => {
+    const er = {};
+    if(!title)      er.title      = "Required";
+    if(!desc)       er.desc       = "Required";
+    if(!system)     er.system     = "Required";
+    if(!deployDate) er.deployDate = "Required";
+    setErrs(er);
+    return Object.keys(er).length === 0;
+  };
+  const validate2 = () => {
+    const er = {};
+    if(!rollback)     er.rollback     = "Required";
+    if(!testEvidence) er.testEvidence = "Required";
+    setErrs(er);
+    return Object.keys(er).length === 0;
+  };
+
+  const handleFiles = (e) => {
+    const files = Array.from(e.target.files||[]);
+    setAttach(p=>[...p, ...files.map(f=>({name:f.name,size:f.size,type:f.type}))]);
+  };
+
+  const removeFile = (i) => setAttach(p=>p.filter((_,j)=>j!==i));
+
+  const STEPS = ["Request Details","Risk & Rollback","Review & Submit"];
+
+  const approvalRoute = changeType==="Emergency"
+    ? "Emergency → Senior Approval → Scheduled"
+    : "Draft → Line Manager (L1) → Secondary Manager (L2) → Change Review Board → Scheduled";
+
+  const handleSubmit = () => {
+    onSubmit({
+      title, desc, system, environment,
+      deployDate, deployStart, deployEnd,
+      changeType, riskLevel, category,
+      rollback, testEvidence, attachments,
+    });
+    onClose();
+  };
 
   return (
     <Modal title="Raise Change Request" sub={`Step ${step} of 3 — ${STEPS[step-1]}`} onClose={onClose} w={700}>
-      {/* Progress */}
+      {/* Progress bar */}
       <div style={{display:"flex",gap:0,marginBottom:22}}>
         {STEPS.map((sl,i)=>(
           <div key={i} style={{flex:1,display:"flex",alignItems:"center",flexDirection:"column",gap:5}}>
-            <div style={{width:26,height:26,borderRadius:"50%",display:"flex",alignItems:"center",justifyContent:"center",
+            <div style={{width:28,height:28,borderRadius:"50%",display:"flex",alignItems:"center",justifyContent:"center",
               fontSize:11,fontWeight:700,
               background:step>i+1?C.green:step===i+1?C.brand:C.border,
               color:step>=i+1?"#fff":C.muted}}>
@@ -1267,66 +1302,211 @@ function CRForm({onClose,onSubmit}){
         ))}
       </div>
 
+      {/* ── STEP 1: Request Details ── */}
       {step===1&&(
         <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:14}}>
-          <Txt label="Change Title" k="title" ph="e.g. Azure API Gateway v2 Upgrade" span/>
+          {/* Title */}
+          <div style={{gridColumn:"1/-1"}}>
+            <label style={LBL}>Change Title{errs.title&&<span style={{color:C.red,fontWeight:400,textTransform:"none"}}> · {errs.title}</span>}</label>
+            <input value={title} onChange={e=>setTitle(e.target.value)} placeholder="e.g. Azure API Gateway v2 Upgrade" style={inp(!!errs.title)}/>
+          </div>
+
+          {/* Change Type */}
           <div style={{gridColumn:"1/-1"}}>
             <label style={LBL}>Change Type</label>
             <div style={{display:"flex",gap:10}}>
               {[{v:"Standard",icon:"⬡",desc:"Pre-approved, low risk"},{v:"Normal",icon:"◈",desc:"Full approval workflow"},{v:"Emergency",icon:"⚡",desc:"Bypass L2 — senior only"}].map(t=>{
-                const a=d.changeType===t.v;
-                const tc={Standard:C.blue,Normal:C.violet,Emergency:C.red}[t.v];
-                return <button key={t.v} onClick={()=>s("changeType",t.v)} style={{flex:1,padding:"11px 8px",
-                  border:`1.5px solid ${a?tc:C.border}`,borderRadius:8,
-                  background:a?tc+"0D":"#fff",cursor:"pointer",fontFamily:"inherit",transition:"all .15s"}}>
-                  <div style={{fontSize:18,marginBottom:3}}>{t.icon}</div>
-                  <div style={{fontSize:12,fontWeight:700,color:a?tc:C.ink2}}>{t.v}</div>
-                  <div style={{fontSize:10,color:C.muted,marginTop:1}}>{t.desc}</div>
-                </button>;
+                const active = changeType===t.v;
+                const tc = {Standard:C.blue,Normal:C.violet,Emergency:C.red}[t.v];
+                return (
+                  <button key={t.v} onClick={()=>setCType(t.v)} style={{flex:1,padding:"11px 8px",
+                    border:`1.5px solid ${active?tc:C.border}`,borderRadius:8,
+                    background:active?tc+"0D":"#fff",cursor:"pointer",fontFamily:"inherit"}}>
+                    <div style={{fontSize:18,marginBottom:3}}>{t.icon}</div>
+                    <div style={{fontSize:12,fontWeight:700,color:active?tc:C.ink2}}>{t.v}</div>
+                    <div style={{fontSize:10,color:C.muted,marginTop:1}}>{t.desc}</div>
+                  </button>
+                );
               })}
             </div>
           </div>
-          <Sel label="Environment" k="environment" opts={["Dev","Staging","Production"]}/>
-          <Sel label="Risk Level"  k="riskLevel"   opts={["Low","Medium","High"]}/>
-          <Sel label="Category"    k="category"    opts={["Infrastructure","Application","Security","Database","Network","Compliance"]}/>
-          <Txt label="System / Service" k="system" ph="e.g. Azure API Gateway"/>
-          <Txt label="Description" k="desc" ph="What will be changed and why…" ta span/>
-          <Txt label="Deployment Date" k="deployDate" ph="" span={false}/>
+
+          {/* Environment */}
+          <div>
+            <label style={LBL}>Environment</label>
+            <select value={environment} onChange={e=>setEnv(e.target.value)} style={inp()}>
+              {["Dev","Staging","Production"].map(o=><option key={o} value={o}>{o}</option>)}
+            </select>
+          </div>
+
+          {/* Risk Level */}
+          <div>
+            <label style={LBL}>Risk Level</label>
+            <select value={riskLevel} onChange={e=>setRisk(e.target.value)} style={inp()}>
+              {["Low","Medium","High"].map(o=><option key={o} value={o}>{o}</option>)}
+            </select>
+          </div>
+
+          {/* Category */}
+          <div>
+            <label style={LBL}>Category</label>
+            <select value={category} onChange={e=>setCat(e.target.value)} style={inp()}>
+              {["Infrastructure","Application","Security","Database","Network","Compliance"].map(o=><option key={o} value={o}>{o}</option>)}
+            </select>
+          </div>
+
+          {/* System */}
+          <div>
+            <label style={LBL}>System / Service{errs.system&&<span style={{color:C.red,fontWeight:400,textTransform:"none"}}> · {errs.system}</span>}</label>
+            <input value={system} onChange={e=>setSystem(e.target.value)} placeholder="e.g. Azure API Gateway" style={inp(!!errs.system)}/>
+          </div>
+
+          {/* Description */}
+          <div style={{gridColumn:"1/-1"}}>
+            <label style={LBL}>Description{errs.desc&&<span style={{color:C.red,fontWeight:400,textTransform:"none"}}> · {errs.desc}</span>}</label>
+            <textarea value={desc} onChange={e=>setDesc(e.target.value)} placeholder="What will be changed and why…" style={{...inp(!!errs.desc),minHeight:80,resize:"vertical"}}/>
+          </div>
+
+          {/* Deploy Date */}
+          <div>
+            <label style={LBL}>Deployment Date{errs.deployDate&&<span style={{color:C.red,fontWeight:400,textTransform:"none"}}> · {errs.deployDate}</span>}</label>
+            <input type="date" value={deployDate} onChange={e=>setDeployDate(e.target.value)} style={inp(!!errs.deployDate)}/>
+          </div>
+
+          {/* Deploy Window */}
           <div style={{display:"flex",gap:8}}>
-            <div style={{flex:1}}><label style={LBL}>Start</label><input type="time" value={d.deployStart} onChange={e=>s("deployStart",e.target.value)} style={inp()}/></div>
-            <div style={{flex:1}}><label style={LBL}>End</label><input type="time" value={d.deployEnd} onChange={e=>s("deployEnd",e.target.value)} style={inp()}/></div>
+            <div style={{flex:1}}>
+              <label style={LBL}>Start Time</label>
+              <input type="time" value={deployStart} onChange={e=>setDStart(e.target.value)} style={inp()}/>
+            </div>
+            <div style={{flex:1}}>
+              <label style={LBL}>End Time</label>
+              <input type="time" value={deployEnd} onChange={e=>setDEnd(e.target.value)} style={inp()}/>
+            </div>
           </div>
         </div>
       )}
+
+      {/* ── STEP 2: Risk & Rollback ── */}
       {step===2&&(
         <div style={{display:"flex",flexDirection:"column",gap:14}}>
-          <Txt label="Rollback Plan" k="rollback" ph="How to revert if something goes wrong. Include estimated time…" ta/>
-          <Txt label="Testing Evidence" k="testEvidence" ph="UAT results, staging tests, performance benchmarks…" ta/>
+          {/* Risk banner */}
           <div style={{padding:"11px 14px",borderRadius:7,fontSize:12,fontWeight:600,
-            background:d.riskLevel==="High"?C.redBg:d.riskLevel==="Medium"?C.amberBg:C.greenBg,
-            color:d.riskLevel==="High"?C.red:d.riskLevel==="Medium"?C.amber:C.green}}>
-            {d.riskLevel} Risk · {d.changeType==="Emergency"?"Emergency senior approval only":"Line Manager → Secondary Manager → Change Review Board"}
+            background:riskLevel==="High"?C.redBg:riskLevel==="Medium"?C.amberBg:C.greenBg,
+            color:riskLevel==="High"?C.red:riskLevel==="Medium"?C.amber:C.green}}>
+            {riskLevel} Risk — Approval route: {approvalRoute}
           </div>
-          <div style={{border:`2px dashed ${C.border}`,borderRadius:7,padding:18,textAlign:"center",color:C.muted,fontSize:12}}>
-            📎 Attach deployment plans, diagrams, and evidence (file storage connects in production)
+
+          {/* Rollback */}
+          <div>
+            <label style={LBL}>Rollback Plan{errs.rollback&&<span style={{color:C.red,fontWeight:400,textTransform:"none"}}> · {errs.rollback}</span>}</label>
+            <textarea value={rollback} onChange={e=>setRollback(e.target.value)}
+              placeholder="Step-by-step instructions to revert if something goes wrong. Include estimated time to roll back…"
+              style={{...inp(!!errs.rollback),minHeight:90,resize:"vertical"}}/>
+          </div>
+
+          {/* Test Evidence */}
+          <div>
+            <label style={LBL}>Testing Evidence{errs.testEvidence&&<span style={{color:C.red,fontWeight:400,textTransform:"none"}}> · {errs.testEvidence}</span>}</label>
+            <textarea value={testEvidence} onChange={e=>setTest(e.target.value)}
+              placeholder="UAT results, staging test outcomes, performance benchmarks, sign-off references…"
+              style={{...inp(!!errs.testEvidence),minHeight:90,resize:"vertical"}}/>
+          </div>
+
+          {/* File Attachments */}
+          <div>
+            <label style={LBL}>Attachments (optional)</label>
+            <label style={{display:"flex",alignItems:"center",gap:10,padding:"14px 16px",
+              border:`2px dashed ${C.border}`,borderRadius:8,cursor:"pointer",
+              background:"#FAFAFA",color:C.muted,fontSize:12,fontWeight:500}}>
+              <span style={{fontSize:20}}>📎</span>
+              <div>
+                <div style={{fontWeight:600,color:C.ink}}>Click to attach files</div>
+                <div style={{fontSize:11,marginTop:2}}>Deployment plans, diagrams, test evidence, screenshots</div>
+              </div>
+              <input type="file" multiple accept=".pdf,.doc,.docx,.xls,.xlsx,.png,.jpg,.jpeg,.txt"
+                onChange={handleFiles} style={{display:"none"}}/>
+            </label>
+            {attachments.length>0&&(
+              <div style={{marginTop:8,display:"flex",flexDirection:"column",gap:5}}>
+                {attachments.map((f,i)=>(
+                  <div key={i} style={{display:"flex",justifyContent:"space-between",alignItems:"center",
+                    padding:"7px 12px",background:"#F8FAFC",borderRadius:6,border:`1px solid ${C.border}`}}>
+                    <div style={{display:"flex",alignItems:"center",gap:8}}>
+                      <span style={{fontSize:14}}>📄</span>
+                      <div>
+                        <div style={{fontSize:12,fontWeight:600,color:C.ink}}>{f.name}</div>
+                        <div style={{fontSize:10,color:C.muted}}>{(f.size/1024).toFixed(1)} KB</div>
+                      </div>
+                    </div>
+                    <button onClick={()=>removeFile(i)} style={{...btn("ghost"),padding:"3px 7px",fontSize:11,color:C.red}}>✕</button>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         </div>
       )}
+
+      {/* ── STEP 3: Review & Submit ── */}
       {step===3&&(
-        <div style={{display:"flex",flexDirection:"column",gap:12}}>
+        <div style={{display:"flex",flexDirection:"column",gap:14}}>
+          {/* Full summary */}
           <div style={{background:C.pageBg,borderRadius:8,padding:16}}>
             <div style={{fontSize:13,fontWeight:700,color:C.ink,marginBottom:12}}>Review Summary</div>
             <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
-              {[["Title",d.title],["System",d.system],["Environment",d.environment],["Type",d.changeType],["Risk",d.riskLevel],["Category",d.category],["Deploy Date",d.deployDate],["Window",`${d.deployStart}–${d.deployEnd}`]].map(([k,v])=>(
-                <div key={k} style={{background:"#fff",padding:"8px 11px",borderRadius:6,border:`1px solid ${C.border}`}}>
+              {[
+                ["Title",       title],
+                ["System",      system],
+                ["Environment", environment],
+                ["Change Type", changeType],
+                ["Risk Level",  riskLevel],
+                ["Category",    category],
+                ["Deploy Date", deployDate],
+                ["Time Window", `${deployStart} – ${deployEnd}`],
+              ].map(([k,v])=>(
+                <div key={k} style={{background:"#fff",padding:"8px 11px",borderRadius:6,border:`1px solid ${C.border}`,
+                  gridColumn:k==="Title"?"1/-1":"auto"}}>
                   <div style={{fontSize:10,color:C.muted,fontWeight:700,textTransform:"uppercase",letterSpacing:".06em"}}>{k}</div>
                   <div style={{fontSize:12,fontWeight:600,color:C.ink,marginTop:2}}>{v||"—"}</div>
                 </div>
               ))}
             </div>
           </div>
-          <div style={{padding:"10px 13px",borderRadius:7,fontSize:12,background:C.violetBg,color:C.violet,fontWeight:600}}>
-            Approval route: {d.changeType==="Emergency"?"Emergency → Senior Approval → Scheduled":"Draft → L1 → L2 → Change Review → Scheduled"}
+
+          {/* Description */}
+          <div style={{background:"#fff",border:`1px solid ${C.border}`,borderRadius:8,padding:"12px 14px"}}>
+            <div style={{fontSize:10,color:C.muted,fontWeight:700,textTransform:"uppercase",letterSpacing:".06em",marginBottom:6}}>Description</div>
+            <div style={{fontSize:13,color:C.ink,lineHeight:1.6,whiteSpace:"pre-wrap"}}>{desc||"—"}</div>
+          </div>
+
+          {/* Rollback */}
+          <div style={{background:"#fff",border:`1px solid ${C.border}`,borderRadius:8,padding:"12px 14px"}}>
+            <div style={{fontSize:10,color:C.muted,fontWeight:700,textTransform:"uppercase",letterSpacing:".06em",marginBottom:6}}>Rollback Plan</div>
+            <div style={{fontSize:13,color:C.ink,lineHeight:1.6,whiteSpace:"pre-wrap"}}>{rollback||"—"}</div>
+          </div>
+
+          {/* Test Evidence */}
+          <div style={{background:"#fff",border:`1px solid ${C.border}`,borderRadius:8,padding:"12px 14px"}}>
+            <div style={{fontSize:10,color:C.muted,fontWeight:700,textTransform:"uppercase",letterSpacing:".06em",marginBottom:6}}>Testing Evidence</div>
+            <div style={{fontSize:13,color:C.ink,lineHeight:1.6,whiteSpace:"pre-wrap"}}>{testEvidence||"—"}</div>
+          </div>
+
+          {/* Attachments */}
+          {attachments.length>0&&(
+            <div style={{background:"#fff",border:`1px solid ${C.border}`,borderRadius:8,padding:"12px 14px"}}>
+              <div style={{fontSize:10,color:C.muted,fontWeight:700,textTransform:"uppercase",letterSpacing:".06em",marginBottom:8}}>Attachments ({attachments.length})</div>
+              {attachments.map((f,i)=>(
+                <div key={i} style={{fontSize:12,color:C.ink,padding:"3px 0"}}>{f.name} <span style={{color:C.muted}}>({(f.size/1024).toFixed(1)} KB)</span></div>
+              ))}
+            </div>
+          )}
+
+          {/* Approval route */}
+          <div style={{padding:"12px 14px",borderRadius:8,fontSize:12,background:C.violetBg,
+            border:`1px solid ${C.violet}22`,color:C.violet,fontWeight:600,lineHeight:1.7}}>
+            <div style={{marginBottom:4}}>📋 Approval Route</div>
+            <div style={{fontWeight:500}}>{approvalRoute}</div>
           </div>
         </div>
       )}
@@ -1334,8 +1514,8 @@ function CRForm({onClose,onSubmit}){
       <div style={{display:"flex",justifyContent:"space-between",marginTop:20,paddingTop:16,borderTop:`1px solid ${C.border}`}}>
         <button onClick={step>1?()=>setStep(p=>p-1):onClose} style={btn("ghost")}>{step>1?"← Back":"Cancel"}</button>
         {step<3
-          ?<button onClick={()=>{if(step===1&&!v1())return;if(step===2&&!v2())return;setE({});setStep(p=>p+1)}} style={btn("primary")}>Next →</button>
-          :<button onClick={()=>{onSubmit(d);onClose()}} style={btn("primary")}>Submit CR ✓</button>}
+          ?<button onClick={()=>{if(step===1&&!validate1())return;if(step===2&&!validate2())return;setErrs({});setStep(p=>p+1)}} style={btn("primary")}>Next →</button>
+          :<button onClick={handleSubmit} style={btn("primary")}>Submit CR ✓</button>}
       </div>
     </Modal>
   );
