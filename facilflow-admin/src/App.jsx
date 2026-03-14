@@ -151,11 +151,12 @@ const vsm   = v => VEHICLE_STATUSES.find(s=>s.v===v)||{l:v,color:C.muted,bg:"#F8
 const dsm   = v => DRIVER_STATUSES.find(s=>s.v===v)||{l:v,color:C.muted,bg:"#F8FAFC"};
 
 // DB → UI field normalizers (DB is snake_case, UI expects camelCase from original seed)
-const normCR  = cr => cr ? ({...cr, changeType:cr.change_type??cr.changeType, riskLevel:cr.risk_level??cr.riskLevel, deployDate:cr.deploy_date??cr.deployDate, deployStart:cr.deploy_start??cr.deployStart, deployEnd:cr.deploy_end??cr.deployEnd, isEmergency:cr.is_emergency??cr.isEmergency, systemName:cr.system_name??cr.systemName }) : cr;
-const normVeh = v  => v  ? ({...v,  driverId:v.driver_id??v.driverId }) : v;
-const normDrv = d  => d  ? ({...d,  vehicleId:d.vehicle_id??d.vehicleId }) : d;
-const normInv = i  => i  ? ({...i,  desc:i.description??i.desc, lastUpdated:i.updated_at??i.lastUpdated }) : i;
+const normCR  = cr => cr ? ({...cr, changeType:cr.change_type??cr.changeType, riskLevel:cr.risk_level??cr.riskLevel, deployDate:cr.deploy_date??cr.deployDate, deployStart:cr.deploy_start??cr.deployStart, deployEnd:cr.deploy_end??cr.deployEnd, isEmergency:cr.is_emergency??cr.isEmergency, systemName:cr.system_name??cr.systemName, createdAt:cr.created_at??cr.createdAt, updatedAt:cr.updated_at??cr.updatedAt }) : cr;
+const normVeh = v  => v  ? ({...v,  driverId:v.driver_id??v.driverId, lastUpdated:v.updated_at??v.lastUpdated, createdAt:v.created_at??v.createdAt }) : v;
+const normDrv = d  => d  ? ({...d,  vehicleId:d.vehicle_id??d.vehicleId, lastUpdated:d.updated_at??d.lastUpdated, createdAt:d.created_at??d.createdAt }) : d;
+const normInv = i  => i  ? ({...i,  desc:i.description??i.desc, lastUpdated:i.updated_at??i.lastUpdated, createdAt:i.created_at??i.createdAt }) : i;
 const normAudit = a => a ? ({...a,  at:a.created_at??a.at, by:a.performed_by??a.by }) : a;
+const fmtSafe = d => { if(!d) return "—"; const dt = new Date(d); return isNaN(dt) ? "—" : dt.toLocaleDateString("en-GB",{day:"2-digit",month:"short",year:"numeric"}); };
 
 // ── ATOMS ──────────────────────────────────────────────────────
 const Av = ({i,s=30,bg=C.brand}) => (
@@ -986,7 +987,7 @@ function UserMgmt({ctx}){
                 <td style={{padding:"11px 14px"}}><span style={{fontSize:11,fontWeight:600,padding:"2px 8px",borderRadius:4,background:C.surface,color:C.ink2,textTransform:"capitalize"}}>{u.role.replace("_"," ")}</span></td>
                 <td style={{padding:"11px 14px",fontSize:12,color:C.muted}}>{u.dept}</td>
                 <td style={{padding:"11px 14px"}}><UChip s={u.status}/></td>
-                <td style={{padding:"11px 14px",fontSize:11,color:C.muted,whiteSpace:"nowrap"}}>{fmtD(u.createdAt)}</td>
+                <td style={{padding:"11px 14px",fontSize:11,color:C.muted,whiteSpace:"nowrap"}}>{fmtSafe(u.created_at)}</td>
                 <td style={{padding:"11px 14px"}}>
                   <div style={{display:"flex",gap:5}}>
                     <button onClick={()=>setModal({edit:u})} style={{...btn("ghost"),fontSize:11,padding:"4px 8px"}}>Edit</button>
