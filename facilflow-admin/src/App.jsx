@@ -1506,15 +1506,17 @@ function InventoryMgmt({ctx}){
 
   const addItem=async d=>{
     try{
-      const rec={...d,id:genId("INV"),tenant_id:tid};
+      const {desc,...rest}=d;
+      const rec={...rest,description:desc,id:genId("INV"),tenant_id:tid};
       const saved=await createInventoryItem(rec);
-      setInv(p=>[...p,saved]);addAudit("ITEM_ADDED",saved.id,`${d.name} added`);flash("Item added");
+      setInv(p=>[...p,normInv(saved)]);addAudit("ITEM_ADDED",saved.id,`${d.name} added`);flash("Item added");
     }catch(e){flash(e.message,"error");}
   };
   const editItem=async(id,d)=>{
     try{
-      const saved=await updateInventoryItem(id,d);
-      setInv(p=>p.map(i=>i.id!==id?i:saved));
+      const {desc,...rest}=d;
+      const saved=await updateInventoryItem(id,{...rest,description:desc});
+      setInv(p=>p.map(i=>i.id!==id?i:normInv(saved)));
       addAudit("ITEM_UPDATED",id,"Item details updated");flash("Item updated");
     }catch(e){flash(e.message,"error");}
   };
