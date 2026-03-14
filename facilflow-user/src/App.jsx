@@ -282,9 +282,9 @@ export default function UserApp({ currentUser }){
           fetchCRs(tenantId),
           fetchNotifications(uid),
           fetchInventory(tenantId),
+          supabase.from("users").select("*").eq("tenant_id", tenantId),
           fetchVehicles(tenantId),
           fetchDrivers(tenantId),
-          supabase.from("users").select("*").eq("tenant_id", tenantId),
         ]);
         setReqs((reqData || []).map(normReq));
         setCrs((crData || []).map(normCR));
