@@ -88,8 +88,8 @@ const REQ_STATUS = {
 };
 
 // ── HELPERS ────────────────────────────────────────────────────
-const fmtDT = d => new Date(d).toLocaleString("en-GB",{day:"2-digit",month:"short",year:"numeric",hour:"2-digit",minute:"2-digit"});
-const fmtD  = d => new Date(d).toLocaleDateString("en-GB",{day:"2-digit",month:"short",year:"numeric"});
+const fmtDT = d => { try { if(!d) return "—"; const dt=new Date(d); return isNaN(dt)?"—":dt.toLocaleString("en-GB",{day:"2-digit",month:"short",year:"numeric",hour:"2-digit",minute:"2-digit"}); } catch(e){ return "—"; }};
+const fmtD  = d => { try { if(!d) return "—"; const dt=new Date(d); return isNaN(dt)?"—":dt.toLocaleDateString("en-GB",{day:"2-digit",month:"short",year:"numeric"}); } catch(e){ return "—"; }};
 const uid   = p => `${p}-${Date.now()}-${Math.random().toString(36).slice(2,6)}`;
 const crId  = n => `CR-${String(n).padStart(6,"0")}`;
 const reqId = (y,n) => `REQ-${y}-${String(n).padStart(3,"0")}`;
@@ -950,7 +950,7 @@ function StatForm({onClose,onSubmit,invItems=[]}){
 }
 
 function ReqDetail({req,onClose,ctx}){
-  const {uid,transReq,me,invItems,users,vehicles,drivers}=ctx;
+  const {uid,transReq,me,invItems,users,vehicles=[],drivers=[]}=ctx;
   const [note,setNote]=useState("");
   const [tab,setTab]=useState("details");
   const canApprove  = me.role==="manager"       && req.status==="pending_approval";
@@ -965,7 +965,7 @@ function ReqDetail({req,onClose,ctx}){
       const d = req.details||{};
       return (
         <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
-          {[["Pickup",d.pickup],["Destination",d.destination],["Date",d.date],["Time",`${d.start||""} – ${d.end||""}`],["Passengers",d.passengers],["Purpose",d.purpose]].map(([k,v])=>v?(
+          {[["Pickup",d.pickup],["Destination",d.destination],["Date",d.date],["Time",`${d.start||""} – ${d.end||""}`],["Passengers",d.passengers!=null?String(d.passengers):null],["Purpose",d.purpose]].map(([k,v])=>v!=null&&v!==""?(
             <div key={k} style={{background:C.pageBg,borderRadius:7,padding:"10px 12px",gridColumn:k==="Purpose"?"1/-1":"auto"}}>
               <div style={{fontSize:10,fontWeight:700,color:C.muted,textTransform:"uppercase",letterSpacing:".06em",marginBottom:3}}>{k}</div>
               <div style={{fontSize:13,color:C.ink,fontWeight:500}}>{String(v)}</div>
