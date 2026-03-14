@@ -604,21 +604,25 @@ function RequestsMgmt({ctx}){
       setSel(null);
       const requester = usersMap[req.submitted_by];
       if(requester?.email){
-        const template = newStatus === "approved" ? "request_approved" : "request_rejected";
-        await supabase.functions.invoke("send-email",{body:{
-          template,
-          to: requester.email,
-          data:{
-            requester_name: requester.name,
-            request_id:     req.id,
-            type:           req.type==="pool_car" ? "Pool Car" : "Stationery",
-            title:          req.title,
-            approver:       usersMap[uid]?.name || "Admin",
-            approved_at:    new Date().toLocaleDateString("en-GB",{day:"numeric",month:"long",year:"numeric"}),
-            reason:         note || null,
-            app_url:        "https://facilflowuser.vercel.app",
-          }
-        }});
+        try {
+          const template = newStatus === "approved" ? "request_approved" : "request_rejected";
+          const { data:emailData, error:emailErr } = await supabase.functions.invoke("send-email",{body:{
+            template,
+            to: requester.email,
+            data:{
+              requester_name: requester.name,
+              request_id:     req.id,
+              type:           req.type==="pool_car" ? "Pool Car" : "Stationery",
+              title:          req.title,
+              approver:       usersMap[uid]?.name || "Admin",
+              approved_at:    new Date().toLocaleDateString("en-GB",{day:"numeric",month:"long",year:"numeric"}),
+              reason:         note || null,
+              app_url:        "https://facilflowuser.vercel.app",
+            }
+          }});
+          if(emailErr) flash(`Request ${newStatus} but email failed: ${emailErr.message}`,"error");
+          else if(emailData?.error) flash(`Request ${newStatus} but email failed: ${JSON.stringify(emailData.error)}`,"error");
+        } catch(emailEx){ flash(`Request ${newStatus} but email error: ${emailEx.message}`,"error"); }
       }
     } catch(e){ flash(e.message,"error"); }
   };
@@ -638,21 +642,25 @@ function RequestsMgmt({ctx}){
       const veh = (vehicles||[]).find(v=>v.id===vehicleId);
       const drv = driverId ? (drivers||[]).find(d=>d.id===driverId) : null;
       if(requester?.email){
-        await supabase.functions.invoke("send-email",{body:{
-          template:"request_approved",
-          to: requester.email,
-          data:{
-            requester_name: requester.name,
-            request_id:     req.id,
-            type:           "Pool Car",
-            title:          req.title,
-            approver:       usersMap[uid]?.name || "Admin",
-            approved_at:    new Date().toLocaleDateString("en-GB",{day:"numeric",month:"long",year:"numeric"}),
-            vehicle:        veh ? `${veh.plate} — ${veh.model} (${veh.color})` : null,
-            driver:         drv ? `${drv.name} · ${drv.phone}` : null,
-            app_url:        "https://facilflowuser.vercel.app",
-          }
-        }});
+        try {
+          const { data:emailData, error:emailErr } = await supabase.functions.invoke("send-email",{body:{
+            template:"request_approved",
+            to: requester.email,
+            data:{
+              requester_name: requester.name,
+              request_id:     req.id,
+              type:           "Pool Car",
+              title:          req.title,
+              approver:       usersMap[uid]?.name || "Admin",
+              approved_at:    new Date().toLocaleDateString("en-GB",{day:"numeric",month:"long",year:"numeric"}),
+              vehicle:        veh ? `${veh.plate} — ${veh.model} (${veh.color})` : null,
+              driver:         drv ? `${drv.name} · ${drv.phone}` : null,
+              app_url:        "https://facilflowuser.vercel.app",
+            }
+          }});
+          if(emailErr) flash(`Request approved but email failed: ${emailErr.message}`,"error");
+          else if(emailData?.error) flash(`Request approved but email failed: ${JSON.stringify(emailData.error)}`,"error");
+        } catch(emailEx){ flash(`Request approved but email error: ${emailEx.message}`,"error"); }
       }
     } catch(e){ flash(e.message,"error"); }
   };
@@ -954,16 +962,17 @@ function RequestsMgmt({ctx}){
 
 function RequestDetailModal({req,usersMap,vehicles,drivers,inventory,onClose,onAction,onAssign,onDeliver}){
   const [note,  setNote]  = useState("");
-  const [vehId, setVehId] = useState("");
-  const [drvId, setDrvId] = useState("");
+  const [vehId, setVehId] = useState(req.assigned_vehicle||"");
+  const [drvId, setDrvId] = useState(req.assigned_driver||"");
   const [tab,   setTab]   = useState("details");
 
   const submitter  = usersMap[req.submitted_by];
   const isPending  = req.status==="pending_approval";
   const isApproved = req.status==="approved";
   const isCarReq   = req.type==="pool_car";
-  const availVeh   = vehicles.filter(v=>v.status==="available");
-  const availDrv   = drivers.filter(d=>d.status==="available");
+  // For pending: only show available. For approved: show available + currently assigned
+  const availVeh   = vehicles.filter(v=>v.status==="available" || v.id===req.assigned_vehicle);
+  const availDrv   = drivers.filter(d=>d.status==="available"  || d.id===req.assigned_driver);
   const assignedVeh= req.assigned_vehicle ? vehicles.find(v=>v.id===req.assigned_vehicle) : null;
   const assignedDrv= req.assigned_driver  ? drivers.find(d=>d.id===req.assigned_driver)  : null;
 
@@ -1029,28 +1038,31 @@ function RequestDetailModal({req,usersMap,vehicles,drivers,inventory,onClose,onA
               </div>
             </div>
           )}
-          {isPending&&isCarReq&&(
-            <div style={{border:`1px solid ${C.border}`,borderRadius:8,padding:14}}>
-              <div style={{fontSize:13,fontWeight:700,color:C.ink,marginBottom:12}}>🚗 Assign Vehicle & Driver</div>
-              {availVeh.length===0
+          {(isPending||isApproved)&&isCarReq&&(
+            <div style={{border:`1px solid ${isApproved?C.green:C.border}`,borderRadius:8,padding:14,background:isApproved?"#F0FDF4":"#fff"}}>
+              <div style={{fontSize:13,fontWeight:700,color:isApproved?C.green:C.ink,marginBottom:12}}>
+                🚗 {isApproved?"Change Vehicle / Driver Assignment":"Assign Vehicle & Driver"}
+              </div>
+              {availVeh.length===0 && !assignedVeh
                 ? <div style={{fontSize:13,color:C.muted}}>No vehicles available right now.</div>
-                : <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:12}}>
+                : <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:4}}>
                     <div>
-                      <label style={LBL}>Vehicle <span style={{color:C.red}}>*</span></label>
+                      <label style={LBL}>Vehicle {isPending&&<span style={{color:C.red}}>*</span>}</label>
                       <select value={vehId} onChange={e=>setVehId(e.target.value)} style={inp()}>
                         <option value="">Select vehicle…</option>
-                        {availVeh.map(v=><option key={v.id} value={v.id}>{v.plate} — {v.model} ({v.color})</option>)}
+                        {availVeh.map(v=><option key={v.id} value={v.id}>{v.plate} — {v.model} ({v.color}){v.id===req.assigned_vehicle?" (currently assigned)":""}</option>)}
                       </select>
                     </div>
                     <div>
                       <label style={LBL}>Driver (optional)</label>
                       <select value={drvId} onChange={e=>setDrvId(e.target.value)} style={inp()}>
-                        <option value="">Select driver…</option>
-                        {availDrv.map(d=><option key={d.id} value={d.id}>{d.name} — {d.phone}</option>)}
+                        <option value="">No driver</option>
+                        {availDrv.map(d=><option key={d.id} value={d.id}>{d.name} — {d.phone}{d.id===req.assigned_driver?" (currently assigned)":""}</option>)}
                       </select>
                     </div>
                   </div>
               }
+              {isApproved&&<div style={{fontSize:11,color:C.green,marginTop:6}}>Changing assignment will notify the requester by email.</div>}
             </div>
           )}
           {isPending&&!isCarReq&&(
@@ -1093,7 +1105,14 @@ function RequestDetailModal({req,usersMap,vehicles,drivers,inventory,onClose,onA
           </>
         )}
         {isApproved&&!isCarReq&&<button onClick={()=>onDeliver(req.id)} style={{...btn("primary"),background:"#059669"}}>📦 Mark Delivered</button>}
-        {isApproved&&isCarReq&&<button onClick={()=>onDeliver(req.id)} style={{...btn("primary"),background:"#059669"}}>✅ Mark Complete</button>}
+        {isApproved&&isCarReq&&(
+          <>
+            {vehId&&vehId!==req.assigned_vehicle&&(
+              <button onClick={()=>onAssign(req.id,vehId,drvId)} style={{...btn("primary"),background:C.blue}}>🔄 Update Assignment</button>
+            )}
+            <button onClick={()=>onDeliver(req.id)} style={{...btn("primary"),background:"#059669"}}>✅ Mark Complete</button>
+          </>
+        )}
       </div>
     </Modal>
   );
