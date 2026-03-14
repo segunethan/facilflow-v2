@@ -604,9 +604,20 @@ function RequestsMgmt({ctx}){
       setSel(null);
       const requester = usersMap[req.submitted_by];
       if(requester?.email){
+        const template = newStatus === "approved" ? "request_approved" : "request_rejected";
         await supabase.functions.invoke("send-email",{body:{
-          template:"request_approved", to:requester.email,
-          data:{type:req.type==="pool_car"?"Pool Car":"Stationery", title:req.title, approver:usersMap[uid]?.name||"Admin", app_url:"https://facilflowuser.vercel.app"}
+          template,
+          to: requester.email,
+          data:{
+            requester_name: requester.name,
+            request_id:     req.id,
+            type:           req.type==="pool_car" ? "Pool Car" : "Stationery",
+            title:          req.title,
+            approver:       usersMap[uid]?.name || "Admin",
+            approved_at:    new Date().toLocaleDateString("en-GB",{day:"numeric",month:"long",year:"numeric"}),
+            reason:         note || null,
+            app_url:        "https://facilflowuser.vercel.app",
+          }
         }});
       }
     } catch(e){ flash(e.message,"error"); }
@@ -625,11 +636,22 @@ function RequestsMgmt({ctx}){
       setSel(null);
       const requester = usersMap[req.submitted_by];
       const veh = (vehicles||[]).find(v=>v.id===vehicleId);
-      const drv = (drivers||[]).find(d=>d.id===driverId);
+      const drv = driverId ? (drivers||[]).find(d=>d.id===driverId) : null;
       if(requester?.email){
         await supabase.functions.invoke("send-email",{body:{
-          template:"request_approved", to:requester.email,
-          data:{type:"Pool Car", title:req.title, approver:`${usersMap[uid]?.name||"Admin"} — ${veh?.plate||""} ${veh?.model||""}${drv?` (Driver: ${drv.name})`:""}`, app_url:"https://facilflowuser.vercel.app"}
+          template:"request_approved",
+          to: requester.email,
+          data:{
+            requester_name: requester.name,
+            request_id:     req.id,
+            type:           "Pool Car",
+            title:          req.title,
+            approver:       usersMap[uid]?.name || "Admin",
+            approved_at:    new Date().toLocaleDateString("en-GB",{day:"numeric",month:"long",year:"numeric"}),
+            vehicle:        veh ? `${veh.plate} — ${veh.model} (${veh.color})` : null,
+            driver:         drv ? `${drv.name} · ${drv.phone}` : null,
+            app_url:        "https://facilflowuser.vercel.app",
+          }
         }});
       }
     } catch(e){ flash(e.message,"error"); }
