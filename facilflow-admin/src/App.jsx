@@ -1,5 +1,5 @@
 import { supabase } from "./lib/supabase.js";
-import { fetchUsers, updateUser, deleteUser, fetchVehicles, createVehicle, updateVehicle, fetchDrivers, createDriver, updateDriver, fetchInventory, createInventoryItem, updateInventoryItem, fetchRequests, updateRequest, fetchCRs, updateCR, fetchAuditLog, addAuditEntry } from "./lib/supabase.js";
+import { fetchUsers, updateUser, deleteUser, fetchVehicles, createVehicle, updateVehicle, fetchDrivers, createDriver, updateDriver, fetchInventory, createInventoryItem, updateInventoryItem, fetchRequests, updateRequest, fetchCRs, updateCR, fetchAuditLog, addAuditEntry, fetchChangeRoles, fetchUserChangeRoles, assignChangeRole, removeChangeRole, fetchApprovalLevels, saveApprovalLevel, deleteApprovalLevel, fetchTenantConfig, saveTenantConfig } from "./lib/supabase.js";
 import { useState, useMemo, useCallback, useEffect } from "react";
 
 /* =========================================================
@@ -261,8 +261,9 @@ const NAV = [
     {k:"inventory",  l:"Inventory",        icon:"📦"},
   ]},
   {group:"Change Management",items:[
-    {k:"change_requests",l:"Change Requests",icon:"⟳"},
-    {k:"cr_policy",      l:"CR Policy",      icon:"⚙"},
+    {k:"change_requests", l:"Change Requests",  icon:"⟳"},
+    {k:"cr_policy",       l:"CR Policy",        icon:"⚙"},
+    {k:"change_config",   l:"Change Config",    icon:"🔧"},
   ]},
   {group:"System",items:[
     {k:"notifications",l:"Notifications",  icon:"🔔"},
@@ -281,7 +282,11 @@ export default function AdminApp({ currentUser }){
   const [inventory, setInv]      = useState([]);
   const [requests,  setRequests] = useState([]);
   const [crs,       setCrs]      = useState([]);
-  const [audit,     setAudit]    = useState([]);
+  const [audit,       setAudit]      = useState([]);
+  const [changeRoles,   setChangeRoles]   = useState([]);
+  const [userCRoles,    setUserCRoles]    = useState([]);
+  const [approvalLevels,setApprovalLevels]= useState([]);
+  const [tenantConfig,  setTenantConfig]  = useState(null);
   const [toast,     setToast]    = useState(null);
   const [loading,   setLoading]  = useState(true);
 
@@ -310,6 +315,19 @@ export default function AdminApp({ currentUser }){
       setAudit((al||[]).map(normAudit));
     }).catch(console.error)
     .finally(()=>setLoading(false));
+
+    // Load change management config (non-fatal)
+    Promise.all([
+      fetchChangeRoles(),
+      fetchUserChangeRoles(tid),
+      fetchApprovalLevels(tid),
+      fetchTenantConfig(tid),
+    ]).then(([cr2,ucr,al2,tc])=>{
+      setChangeRoles(cr2||[]);
+      setUserCRoles(ucr||[]);
+      setApprovalLevels(al2||[]);
+      setTenantConfig(tc);
+    }).catch(e=>console.warn("Change config load:", e.message));
   },[tid]);
 
   const flash = useCallback((msg,type="success")=>{
@@ -347,6 +365,10 @@ export default function AdminApp({ currentUser }){
     audit, addAudit:addAuditFn,
     flash,
     adminUser: me,
+    changeRoles, setChangeRoles,
+    userCRoles, setUserCRoles,
+    approvalLevels, setApprovalLevels,
+    tenantConfig, setTenantConfig,
   };
 
   return (
@@ -415,6 +437,7 @@ export default function AdminApp({ currentUser }){
           {page==="inventory"      && <InventoryMgmt ctx={ctx}/>}
           {page==="change_requests"&& <CRAdmin       ctx={ctx}/>}
           {page==="cr_policy"      && <CRPolicy      ctx={ctx}/>}
+          {page==="change_config"   && <ChangeConfig  ctx={ctx}/>}
           {page==="notifications"  && <NotifPolicy   ctx={ctx}/>}
           {page==="audit"          && <AuditLog      ctx={ctx}/>}
         </main>
@@ -1761,70 +1784,309 @@ function CRAdmin({ctx}){
 // ══════════════════════════════════════════════════════════════
 // CR POLICY
 // ══════════════════════════════════════════════════════════════
-function CRPolicy({ctx}){
-  const {flash}=ctx;
-  const [policy,setPolicy]=useState({
-    standard: {stages:1,roles:["manager"],description:"Low-risk, pre-approved changes. Single manager approval."},
-    normal:   {stages:2,roles:["manager","resource_team"],description:"Standard change workflow with multi-stage approval."},
-    emergency:{stages:1,roles:["manager"],description:"Emergency bypass — senior approval only, no secondary review."},
-    major:    {stages:3,roles:["manager","admin","resource_team"],description:"High-risk changes requiring full approval chain."},
-  });
+function CRPolicy({ctx}){ return <CRPolicyFull ctx={ctx}/>; }
 
-  const save=()=>{flash("Change management policy saved");};
+// ══════════════════════════════════════════════════════════════
+// CR POLICY — Rebuilt with real approval levels
+// ══════════════════════════════════════════════════════════════
+function CRPolicyFull({ctx}){
+  const {approvalLevels,setApprovalLevels,tenantConfig,setTenantConfig,users,flash,tid,changeRoles}=ctx;
+  const [editing,setEditing]=useState(null);
+  const [saving,setSaving]=useState(false);
+
+  const CHANGE_TYPES = ["Standard","Normal","Major","Emergency"];
+
+  const addLevel = () => {
+    const next = (approvalLevels||[]).length + 1;
+    setEditing({
+      id: null, tenant_id: tid,
+      level_order: next, name:`Level ${next} Approval`,
+      description:"", role_key:"change_approver_l1",
+      change_types:["Normal","Major"],
+    });
+  };
+
+  const saveLevel = async (level) => {
+    setSaving(true);
+    try {
+      const saved = await saveApprovalLevel({...level, tenant_id:tid});
+      setApprovalLevels(p => {
+        const exists = p.find(l=>l.id===saved.id);
+        return exists ? p.map(l=>l.id===saved.id?saved:l) : [...p, saved];
+      });
+      flash("Approval level saved");
+      setEditing(null);
+    } catch(e){ flash(e.message,"error"); }
+    finally { setSaving(false); }
+  };
+
+  const removeLevel = async (id) => {
+    try {
+      await deleteApprovalLevel(id);
+      setApprovalLevels(p=>p.filter(l=>l.id!==id));
+      flash("Level removed");
+    } catch(e){ flash(e.message,"error"); }
+  };
+
+  const saveManager = async (managerId) => {
+    try {
+      const saved = await saveTenantConfig(tid, {change_manager_id: managerId||null});
+      setTenantConfig(p=>({...p,...saved}));
+      flash("Change Manager updated");
+    } catch(e){ flash(e.message,"error"); }
+  };
+
+  const cmUser = users.find(u=>u.id===tenantConfig?.change_manager_id);
 
   return (
-    <div>
-      <PageTitle title="Change Management Policy" sub="Configure approval workflows per change type"
-        action={<button onClick={save} style={btn("primary")}>Save Policy</button>}/>
-      <div style={{display:"flex",flexDirection:"column",gap:16}}>
-        {Object.entries(policy).map(([type,p])=>(
-          <div key={type} style={card(20)}>
-            <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:16}}>
+    <div style={{display:"flex",flexDirection:"column",gap:20}}>
+      <PageTitle title="CR Policy" sub="Configure change management workflow and approval levels"
+        action={<button onClick={addLevel} style={btn("primary")}>+ Add Approval Level</button>}/>
+
+      {/* Change Manager Config */}
+      <div style={card(20)}>
+        <div style={{fontSize:14,fontWeight:700,color:C.ink,marginBottom:4}}>Fixed Change Manager</div>
+        <div style={{fontSize:12,color:C.muted,marginBottom:14}}>All change requests go to this person as the first approval gate.</div>
+        <div style={{display:"grid",gridTemplateColumns:"1fr auto",gap:12,alignItems:"end"}}>
+          <div>
+            <label style={LBL}>Assign Change Manager</label>
+            <select
+              value={tenantConfig?.change_manager_id||""}
+              onChange={e=>saveManager(e.target.value)}
+              style={inp()}>
+              <option value="">— Not configured —</option>
+              {users.filter(u=>u.status==="active").map(u=>(
+                <option key={u.id} value={u.id}>{u.name} ({u.email})</option>
+              ))}
+            </select>
+          </div>
+          {cmUser&&(
+            <div style={{display:"flex",alignItems:"center",gap:8,padding:"8px 12px",background:C.greenBg,borderRadius:8,border:`1px solid ${C.green}30`}}>
+              <Av i={cmUser.initials||"?"} s={28}/>
               <div>
-                <div style={{fontSize:15,fontWeight:700,color:C.ink,textTransform:"capitalize"}}>{type} Change</div>
-                <div style={{fontSize:12,color:C.muted,marginTop:2}}>{p.description}</div>
+                <div style={{fontSize:12,fontWeight:700,color:C.ink}}>{cmUser.name}</div>
+                <div style={{fontSize:10,color:C.green,fontWeight:600}}>Active Change Manager</div>
               </div>
-              <span style={{fontSize:11,fontWeight:700,padding:"3px 10px",borderRadius:20,
-                background:type==="emergency"?C.redBg:type==="major"?C.violetBg:type==="normal"?C.amberBg:C.greenBg,
-                color:type==="emergency"?C.red:type==="major"?C.violet:type==="normal"?C.amber:C.green}}>
-                {p.stages} stage{p.stages>1?"s":""}
-              </span>
             </div>
-            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:14}}>
-              <div>
-                <label style={LBL}>Number of Approval Stages</label>
-                <div style={{display:"flex",gap:8}}>
-                  {[1,2,3].map(n=>(
-                    <button key={n} onClick={()=>setPolicy(prev=>({...prev,[type]:{...p,stages:n}}))}
-                      style={{width:40,height:36,border:`1.5px solid ${p.stages===n?C.brand:C.border}`,borderRadius:6,
-                        background:p.stages===n?C.brandLt:"#fff",color:p.stages===n?C.brand:C.muted,
-                        fontSize:14,fontWeight:700,cursor:"pointer",fontFamily:"inherit"}}>{n}</button>
-                  ))}
+          )}
+        </div>
+      </div>
+
+      {/* Approval Levels */}
+      <div style={{display:"flex",flexDirection:"column",gap:12}}>
+        <div style={{fontSize:14,fontWeight:700,color:C.ink}}>Approval Levels</div>
+        {(approvalLevels||[]).length===0&&(
+          <div style={{...card(20),textAlign:"center",color:C.muted,fontSize:13}}>
+            No approval levels configured. Click "+ Add Approval Level" to add one.
+          </div>
+        )}
+        {(approvalLevels||[]).map((level,i)=>(
+          <div key={level.id||i} style={card(16)}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:12}}>
+              <div style={{display:"flex",alignItems:"center",gap:10}}>
+                <div style={{width:32,height:32,borderRadius:"50%",background:C.brand,color:"#fff",display:"flex",alignItems:"center",justifyContent:"center",fontSize:13,fontWeight:800}}>{level.level_order}</div>
+                <div>
+                  <div style={{fontSize:14,fontWeight:700,color:C.ink}}>{level.name}</div>
+                  <div style={{fontSize:11,color:C.muted}}>{level.description||"No description"}</div>
                 </div>
               </div>
-              <div>
-                <label style={LBL}>Approving Roles</label>
-                <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
-                  {["employee","manager","resource_team","admin"].map(role=>{
-                    const active=p.roles.includes(role);
-                    return (
-                      <button key={role} onClick={()=>setPolicy(prev=>({...prev,[type]:{...p,roles:active?p.roles.filter(r=>r!==role):[...p.roles,role]}}))}
-                        style={{padding:"5px 10px",border:`1.5px solid ${active?C.brand:C.border}`,borderRadius:6,
-                          background:active?C.brandLt:"#fff",color:active?C.brand:C.muted,
-                          fontSize:11,fontWeight:600,cursor:"pointer",fontFamily:"inherit",textTransform:"capitalize"}}>
-                        {role.replace("_"," ")}
-                      </button>
-                    );
-                  })}
-                </div>
+              <div style={{display:"flex",gap:6}}>
+                <button onClick={()=>setEditing(level)} style={{...btn("ghost"),fontSize:11,padding:"4px 10px"}}>Edit</button>
+                <button onClick={()=>removeLevel(level.id)} style={{...btn("ghost"),fontSize:11,padding:"4px 10px",color:C.red}}>Remove</button>
               </div>
-              <div style={{gridColumn:"1/-1"}}>
-                <label style={LBL}>Description</label>
-                <input value={p.description} onChange={e=>setPolicy(prev=>({...prev,[type]:{...p,description:e.target.value}}))} style={inp()}/>
-              </div>
+            </div>
+            <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
+              <span style={{fontSize:11,fontWeight:600,padding:"2px 8px",borderRadius:4,background:C.violetBg,color:C.violet}}>
+                Role: {(changeRoles||[]).find(r=>r.key===level.role_key)?.label||level.role_key}
+              </span>
+              {(level.change_types||[]).map(ct=>(
+                <span key={ct} style={{fontSize:11,fontWeight:600,padding:"2px 8px",borderRadius:4,background:C.blueBg,color:C.blue}}>{ct}</span>
+              ))}
             </div>
           </div>
         ))}
+      </div>
+
+      {/* Workflow Summary */}
+      <div style={card(16)}>
+        <div style={{fontSize:13,fontWeight:700,color:C.ink,marginBottom:12}}>Workflow Preview</div>
+        <div style={{display:"flex",alignItems:"center",gap:6,flexWrap:"wrap"}}>
+          {["Technician Creates",`Change Manager`,
+            ...(approvalLevels||[]).map(l=>l.name),
+            "Implementer Executes","Closed"].map((step,i,arr)=>(
+            <React.Fragment key={i}>
+              <span style={{padding:"5px 12px",borderRadius:20,fontSize:11,fontWeight:600,
+                background:i===0?C.blueBg:i===arr.length-1?C.greenBg:i===1?C.violetBg:C.amberBg,
+                color:i===0?C.blue:i===arr.length-1?C.green:i===1?C.violet:C.amber}}>
+                {step}
+              </span>
+              {i<arr.length-1&&<span style={{color:C.muted,fontSize:14}}>→</span>}
+            </React.Fragment>
+          ))}
+        </div>
+      </div>
+
+      {/* Edit Modal */}
+      {editing&&(
+        <Modal title={editing.id?"Edit Approval Level":"New Approval Level"} onClose={()=>setEditing(null)} w={520}>
+          <div style={{display:"flex",flexDirection:"column",gap:14}}>
+            <div>
+              <label style={LBL}>Level Name</label>
+              <input value={editing.name} onChange={e=>setEditing(p=>({...p,name:e.target.value}))} style={inp()} placeholder="e.g. Level 1 Approval"/>
+            </div>
+            <div>
+              <label style={LBL}>Description</label>
+              <input value={editing.description||""} onChange={e=>setEditing(p=>({...p,description:e.target.value}))} style={inp()} placeholder="e.g. CTO Level"/>
+            </div>
+            <div>
+              <label style={LBL}>Level Order</label>
+              <input type="number" min={1} value={editing.level_order} onChange={e=>setEditing(p=>({...p,level_order:+e.target.value}))} style={inp()}/>
+            </div>
+            <div>
+              <label style={LBL}>Required Role</label>
+              <select value={editing.role_key||""} onChange={e=>setEditing(p=>({...p,role_key:e.target.value}))} style={inp()}>
+                {(changeRoles||[]).filter(r=>r.key.includes("approver")).map(r=>(
+                  <option key={r.key} value={r.key}>{r.label}</option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label style={LBL}>Applies to Change Types</label>
+              <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
+                {CHANGE_TYPES.map(ct=>{
+                  const active = (editing.change_types||[]).includes(ct);
+                  return (
+                    <button key={ct} onClick={()=>setEditing(p=>({...p,change_types:active?p.change_types.filter(t=>t!==ct):[...(p.change_types||[]),ct]}))}
+                      style={{padding:"5px 12px",border:`1.5px solid ${active?C.brand:C.border}`,borderRadius:6,
+                        background:active?C.brandLt:"#fff",color:active?C.brand:C.muted,
+                        fontSize:11,fontWeight:600,cursor:"pointer",fontFamily:"inherit"}}>
+                      {ct}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          </div>
+          <div style={{display:"flex",justifyContent:"flex-end",gap:8,marginTop:18,paddingTop:16,borderTop:`1px solid ${C.border}`}}>
+            <button onClick={()=>setEditing(null)} style={btn("ghost")}>Cancel</button>
+            <button onClick={()=>saveLevel(editing)} disabled={saving} style={btn("primary")}>{saving?"Saving…":"Save Level"}</button>
+          </div>
+        </Modal>
+      )}
+    </div>
+  );
+}
+
+// ══════════════════════════════════════════════════════════════
+// CHANGE CONFIG — Role assignment per user
+// ══════════════════════════════════════════════════════════════
+function ChangeConfig({ctx}){
+  const {users,changeRoles,userCRoles,setUserCRoles,flash,tid}=ctx;
+  const [search,setSearch]=useState("");
+  const [saving,setSaving]=useState(null);
+
+  // Build a map: userId -> array of role keys
+  const roleMap = {};
+  (userCRoles||[]).forEach(r=>{ if(!roleMap[r.user_id]) roleMap[r.user_id]=[]; roleMap[r.user_id].push(r.role_key); });
+
+  const shown = users.filter(u=>{
+    if(!search) return true;
+    const q = search.toLowerCase();
+    return u.name.toLowerCase().includes(q) || u.email.toLowerCase().includes(q);
+  });
+
+  const toggleRole = async (userId, roleKey) => {
+    const hasRole = (roleMap[userId]||[]).includes(roleKey);
+    setSaving(userId+roleKey);
+    try {
+      if(hasRole){
+        await removeChangeRole(userId, roleKey);
+        setUserCRoles(p=>p.filter(r=>!(r.user_id===userId&&r.role_key===roleKey)));
+      } else {
+        const saved = await assignChangeRole(userId, roleKey, tid);
+        setUserCRoles(p=>[...p, {user_id:userId, role_key:roleKey, ...saved}]);
+      }
+      flash(`Change role ${hasRole?"removed":"assigned"}`);
+    } catch(e){ flash(e.message,"error"); }
+    finally { setSaving(null); }
+  };
+
+  const CR_ROLES = (changeRoles||[]);
+
+  return (
+    <div style={{display:"flex",flexDirection:"column",gap:16}}>
+      <PageTitle title="Change Roles" sub="Assign change management roles to users — users can hold multiple roles"/>
+
+      {/* Legend */}
+      <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
+        {CR_ROLES.map(r=>(
+          <span key={r.key} style={{fontSize:11,fontWeight:600,padding:"3px 10px",borderRadius:20,background:C.violetBg,color:C.violet,border:`1px solid ${C.violet}22`}}>
+            {r.label}
+          </span>
+        ))}
+      </div>
+
+      {/* Search */}
+      <div style={{position:"relative"}}>
+        <span style={{position:"absolute",left:10,top:"50%",transform:"translateY(-50%)",color:C.muted}}>🔍</span>
+        <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Search users…" style={{...inp(),paddingLeft:30}}/>
+      </div>
+
+      {/* User role grid */}
+      <div style={card(0)}>
+        <table style={{width:"100%",borderCollapse:"collapse"}}>
+          <thead>
+            <tr style={{background:"#FAFAFA"}}>
+              <th style={{padding:"9px 14px",textAlign:"left",fontSize:10,fontWeight:700,color:C.muted,textTransform:"uppercase",letterSpacing:".08em",borderBottom:`1px solid ${C.border}`}}>User</th>
+              <th style={{padding:"9px 14px",textAlign:"left",fontSize:10,fontWeight:700,color:C.muted,textTransform:"uppercase",letterSpacing:".08em",borderBottom:`1px solid ${C.border}`}}>Dept</th>
+              {CR_ROLES.map(r=>(
+                <th key={r.key} style={{padding:"9px 10px",textAlign:"center",fontSize:9,fontWeight:700,color:C.muted,textTransform:"uppercase",letterSpacing:".06em",borderBottom:`1px solid ${C.border}`,minWidth:80}}>
+                  {r.label.replace("Change ","").replace(" L1","L1").replace(" L2","L2")}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {shown.map((u,i)=>{
+              const myRoles = roleMap[u.id]||[];
+              return (
+                <tr key={u.id} style={{borderBottom:i<shown.length-1?`1px solid #F8FAFC`:"none"}}>
+                  <td style={{padding:"11px 14px"}}>
+                    <div style={{display:"flex",alignItems:"center",gap:8}}>
+                      <Av i={u.initials||"?"} s={28}/>
+                      <div>
+                        <div style={{fontSize:12,fontWeight:600,color:C.ink}}>{u.name}</div>
+                        <div style={{fontSize:10,color:C.muted}}>{u.email}</div>
+                      </div>
+                    </div>
+                  </td>
+                  <td style={{padding:"11px 14px",fontSize:11,color:C.muted}}>{u.dept}</td>
+                  {CR_ROLES.map(r=>{
+                    const has = myRoles.includes(r.key);
+                    const isSaving = saving===u.id+r.key;
+                    return (
+                      <td key={r.key} style={{padding:"11px 10px",textAlign:"center"}}>
+                        <button
+                          onClick={()=>toggleRole(u.id, r.key)}
+                          disabled={!!isSaving}
+                          style={{width:28,height:28,borderRadius:"50%",border:`2px solid ${has?C.green:C.border}`,
+                            background:has?C.green:"#fff",cursor:"pointer",
+                            display:"flex",alignItems:"center",justifyContent:"center",
+                            fontSize:13,margin:"0 auto",
+                            opacity:isSaving?.5:1}}>
+                          {isSaving?"…":has?"✓":""}
+                        </button>
+                      </td>
+                    );
+                  })}
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+        <div style={{padding:"9px 14px",borderTop:`1px solid #F8FAFC`,fontSize:11,color:C.muted}}>
+          {shown.length} users · Click circles to toggle roles · Green = assigned
+        </div>
       </div>
     </div>
   );

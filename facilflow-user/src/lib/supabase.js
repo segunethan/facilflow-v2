@@ -162,3 +162,54 @@ export const subscribeToTable = (table, tenantId, callback) => {
     }, callback)
     .subscribe()
 }
+
+// ── CHANGE MANAGEMENT ──────────────────────────────────────
+
+export const fetchUserChangeRoles = async (userId) => {
+  const { data, error } = await supabase
+    .from('user_change_roles')
+    .select('role_key')
+    .eq('user_id', userId)
+  if (error) return []
+  return data.map(r => r.role_key)
+}
+
+export const fetchUsersWithChangeRole = async (roleKey, tenantId) => {
+  const { data, error } = await supabase
+    .from('user_change_roles')
+    .select('user_id, users(id,name,email,initials,dept)')
+    .eq('role_key', roleKey)
+    .eq('tenant_id', tenantId)
+  if (error) return []
+  return data.map(r => r.users).filter(Boolean)
+}
+
+export const fetchApprovalLevels = async (tenantId) => {
+  const { data, error } = await supabase
+    .from('change_approval_levels')
+    .select('*')
+    .eq('tenant_id', tenantId)
+    .order('level_order')
+  if (error) return []
+  return data
+}
+
+export const fetchTenantConfig = async (tenantId) => {
+  const { data, error } = await supabase
+    .from('change_tenant_config')
+    .select('*, users(id,name,email,initials)')
+    .eq('tenant_id', tenantId)
+    .single()
+  if (error) return null
+  return data
+}
+
+export const updateCRStage = async (id, updates) => {
+  const { data, error } = await supabase
+    .from('change_requests')
+    .update({ ...updates, updated_at: new Date().toISOString() })
+    .eq('id', id)
+    .select().single()
+  if (error) throw error
+  return data
+}

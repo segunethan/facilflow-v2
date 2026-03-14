@@ -7,6 +7,11 @@ import {
   fetchInventory,
   fetchVehicles,
   fetchDrivers,
+  fetchUserChangeRoles,
+  fetchUsersWithChangeRole,
+  fetchApprovalLevels,
+  fetchTenantConfig,
+  updateCRStage,
 } from "./lib/supabase.js";
 import { emailCRSubmitted, emailCRApproved, emailCRRejected, emailCRScheduled, emailRequestApproved } from "./lib/email.js";
 
@@ -262,8 +267,12 @@ export default function UserApp({ currentUser }){
   const [reqs,    setReqs]   = useState([]);
   const [crs,     setCrs]    = useState([]);
   const [invItems,  setInvItems]  = useState([]);
-  const [vehicles,  setVehicles]  = useState([]);
-  const [drivers,   setDrivers]   = useState([]);
+  const [vehicles,    setVehicles]    = useState([]);
+  const [drivers,     setDrivers]     = useState([]);
+  const [myChangeRoles, setMyChangeRoles] = useState([]);
+  const [approvalLevels,setApprovalLevels]= useState([]);
+  const [tenantConfig,  setTenantConfig]  = useState(null);
+  const [crUsers,       setCRUsers]       = useState({});
   const [users,   setUsers]  = useState({});
   const [toast,   setToast]  = useState(null);
   const [loading, setLoading]= useState(true);
@@ -299,6 +308,26 @@ export default function UserApp({ currentUser }){
           setVehicles(Array.isArray(vd) ? vd : []);
           setDrivers(Array.isArray(dd) ? dd : []);
         } catch(ve){ console.warn("Vehicles/drivers fetch skipped:", ve.message); }
+
+        // Fetch change management config — non-fatal
+        try {
+          const [myRoles, levels, config] = await Promise.all([
+            fetchUserChangeRoles(uid),
+            fetchApprovalLevels(tenantId),
+            fetchTenantConfig(tenantId),
+          ]);
+          setMyChangeRoles(myRoles||[]);
+          setApprovalLevels(levels||[]);
+          setTenantConfig(config);
+          // Load users with change roles for CR workflows
+          const roleKeys = ['change_manager','change_reviewer','change_approver_l1','change_approver_l2','change_implementer'];
+          const roleUsers = {};
+          await Promise.all(roleKeys.map(async rk => {
+            const us = await fetchUsersWithChangeRole(rk, tenantId);
+            roleUsers[rk] = us||[];
+          }));
+          setCRUsers(roleUsers);
+        } catch(ce){ console.warn("Change roles fetch skipped:", ce.message); }
       } catch(e){ console.error("Load error:", e); }
       finally { setLoading(false); }
     };
@@ -345,39 +374,230 @@ export default function UserApp({ currentUser }){
   // ── CHANGE REQUESTS ────────────────────────────────────────
   const submitCR = useCallback(async (data)=>{
     try {
-      const iso = new Date().toISOString();
+      const iso   = new Date().toISOString();
       const count = crs.length + 1;
-      const id = `CR-${String(count).padStart(6,"0")}`;
+      const id    = `CR-${String(count).padStart(6,"0")}`;
+
+      // Get change manager from tenant config
+      const managerId = tenantConfig?.change_manager_id || null;
+
+      // Build approval stages from configured levels that apply to this change type
+      const applicableLevels = (approvalLevels||[]).filter(l=>
+        (l.change_types||[]).includes(data.changeType)
+      );
+      const levelStages = applicableLevels.map(l=>({
+        level: l.level_order,
+        name:  l.name,
+        role_key: l.role_key,
+        status:"pending",
+        approver_id:null,
+        approved_at:null,
+        note:"",
+      }));
+
       const rec = {
-        id, tenant_id:tenantId, title:data.title,
-        initiator:uid, status:"pending_line_manager",
-        change_type:data.changeType, risk_level:data.riskLevel,
-        environment:data.environment, system_name:data.system,
-        category:data.category, description:data.desc,
-        deploy_date:data.deployDate||null,
-        deploy_start:data.deployStart||null,
-        deploy_end:data.deployEnd||null,
-        rollback:data.rollback, test_evidence:data.testEvidence,
-        is_emergency:data.changeType==="Emergency",
+        id,
+        tenant_id:        tenantId,
+        title:            data.title,
+        initiator:        uid,
+        status:           "pending_manager",
+        current_stage:    "pending_manager",
+        current_level:    0,
+        change_manager_id: managerId,
+        reviewer_ids:     data.reviewerIds||[],
+        change_type:      data.changeType,
+        risk_level:       data.riskLevel,
+        environment:      data.environment,
+        system_name:      data.system,
+        category:         data.category,
+        description:      data.desc,
+        deploy_date:      data.deployDate||null,
+        deploy_start:     data.deployStart||null,
+        deploy_end:       data.deployEnd||null,
+        rollback:         data.rollback,
+        test_evidence:    data.testEvidence,
+        is_emergency:     data.changeType==="Emergency",
+        version:          1,
+        level_approvals:  levelStages,
+        reviewer_comments:[],
         history:[
-          {s:"draft",at:iso,by:uid,label:"Draft created"},
-          {s:"pending_line_manager",at:iso,by:uid,label:"Submitted"},
+          {s:"draft",            at:iso, by:uid, label:"Draft created"},
+          {s:"pending_manager",  at:iso, by:uid, label:"Submitted to Change Manager"},
         ],
-        stages:[
-          {n:1,role:"Line Manager",status:"pending",at:null},
-          {n:2,role:"Secondary Manager",status:"pending",at:null},
-          {n:3,role:"Change Review Board",status:"pending",at:null},
-        ],
-        attachments:[], comments:[],
+        attachments:[...(data.attachments||[]).map(f=>({name:f.name,size:f.size}))],
+        comments:[],
         created_at:iso, updated_at:iso,
       };
+
       const saved = await createCR(rec);
       setCrs(p=>[normCR(saved),...p]);
-      flash(`${id} submitted`);
+      flash(`${id} submitted to Change Manager`);
+
+      // Notify change manager
+      if(managerId){
+        const mgr = users[managerId];
+        if(mgr?.email){
+          try {
+            await supabase.functions.invoke("send-email",{body:{
+              template:"cr_stage_notification",
+              to: mgr.email,
+              data:{
+                cr_id:    id,
+                title:    data.title,
+                stage:    "Change Manager Review",
+                subject:  `${id} - ${data.title} - Change Manager Review`,
+                action:   "A new change request requires your review and approval.",
+                app_url:  "https://facilflowuser.vercel.app",
+                participants:[]
+              }
+            }});
+          } catch(ne){ console.warn("Email notification failed:", ne.message); }
+        }
+      }
+
     } catch(e){ flash(e.message,"error"); }
-  },[crs.length, uid, tenantId, flash]);
+  },[crs.length, uid, tenantId, flash, tenantConfig, approvalLevels, users]);
+
+  // ── ADVANCE CR STAGE ─────────────────────────────────────
+  const advanceCR = useCallback(async (id, action, note="", extra={})=>{
+    try {
+      const cr = crs.find(c=>c.id===id);
+      if(!cr) return;
+      const iso = new Date().toISOString();
+      const levels = cr.level_approvals||[];
+      let nextStatus = cr.status;
+      let nextLevel  = cr.current_level||0;
+      let nextStage  = cr.current_stage;
+      let newHistory = [...(cr.history||[])];
+      let updates    = {};
+
+      if(action === "reject"){
+        nextStatus = "rejected";
+        nextStage  = "rejected";
+        newHistory.push({s:"rejected", at:iso, by:uid, label:"Rejected", note});
+      }
+      else if(action === "approve_manager"){
+        // Manager approved — move to first approval level or implementation if no levels
+        if(levels.length > 0){
+          nextStatus = "pending_approval";
+          nextStage  = `pending_level_1`;
+          nextLevel  = 1;
+          newHistory.push({s:"pending_approval", at:iso, by:uid, label:"Manager Approved", note});
+        } else {
+          nextStatus = "pending_implementation";
+          nextStage  = "pending_implementation";
+          newHistory.push({s:"pending_implementation", at:iso, by:uid, label:"Manager Approved — No approval levels configured", note});
+        }
+      }
+      else if(action === "approve_level"){
+        // Approve current level — move to next or implementation
+        const currentLevelIdx = (cr.current_level||1) - 1;
+        const updatedLevels = levels.map((l,i)=>
+          i===currentLevelIdx ? {...l, status:"approved", approver_id:uid, approved_at:iso, note} : l
+        );
+        updates.level_approvals = updatedLevels;
+        newHistory.push({s:`level_${cr.current_level}_approved`, at:iso, by:uid, label:`Level ${cr.current_level} Approved`, note});
+
+        const nextLevelObj = levels[currentLevelIdx+1];
+        if(nextLevelObj){
+          nextStatus = "pending_approval";
+          nextStage  = `pending_level_${nextLevelObj.level}`;
+          nextLevel  = nextLevelObj.level;
+        } else {
+          nextStatus = "pending_implementation";
+          nextStage  = "pending_implementation";
+          newHistory.push({s:"pending_implementation", at:iso, by:uid, label:"All approvals complete"});
+        }
+      }
+      else if(action === "start_implementation"){
+        nextStatus = "in_progress";
+        nextStage  = "in_progress";
+        newHistory.push({s:"in_progress", at:iso, by:uid, label:"Implementation started"});
+        updates.implementation_started_at = iso;
+      }
+      else if(action === "complete_implementation"){
+        nextStatus = extra.outcome==="failed" ? "failed" : "completed";
+        nextStage  = nextStatus;
+        newHistory.push({s:nextStatus, at:iso, by:uid, label:`Implementation ${extra.outcome||"completed"}`, note});
+        updates.implementation_completed_at = iso;
+        updates.implementation_notes   = extra.implementationNotes||"";
+        updates.implementation_outcome = extra.outcome||"successful";
+      }
+      else if(action === "close"){
+        nextStatus = "closed";
+        nextStage  = "closed";
+        newHistory.push({s:"closed", at:iso, by:uid, label:"Change closed"});
+      }
+      else if(action === "reviewer_comment"){
+        const newComments = [...(cr.reviewer_comments||[]), {by:uid, at:iso, comment:note, concur:extra.concur}];
+        updates.reviewer_comments = newComments;
+        newHistory.push({s:"reviewer_comment", at:iso, by:uid, label:`Reviewer comment`, note});
+      }
+
+      const saved = await updateCR(id,{
+        ...updates,
+        status:        nextStatus,
+        current_stage: nextStage,
+        current_level: nextLevel,
+        history:       newHistory,
+      });
+      setCrs(p=>p.map(c=>c.id===id?normCR(saved):c));
+      flash(`CR updated: ${nextStatus.replace(/_/g," ")}`);
+
+      // Send stage notification emails
+      try { await sendCRStageNotification(saved, action, note, users, cr); }
+      catch(ne){ console.warn("Stage notification failed:", ne.message); }
+
+    } catch(e){ flash(e.message,"error"); }
+  },[crs, uid, flash, users]);
+
+  // Helper: send level-based notifications
+  const sendCRStageNotification = async (cr, action, note, usersMap, prevCR) => {
+    const participants = [];
+    // Always include technician
+    const tech = usersMap[cr.initiator];
+    if(tech?.email) participants.push({email:tech.email, role:"Technician"});
+    // Include change manager
+    const mgr = usersMap[cr.change_manager_id];
+    if(mgr?.email) participants.push({email:mgr.email, role:"Change Manager"});
+
+    let currentStageLabel = "";
+    let currentStageRecipient = null;
+
+    if(action === "approve_manager"){
+      const nextLevel = (cr.level_approvals||[])[0];
+      currentStageLabel = nextLevel?.name || "Implementation";
+      // Find users with the next level role and notify them
+    } else if(action === "approve_level"){
+      const nextLevelObj = (cr.level_approvals||[]).find(l=>l.level===cr.current_level);
+      currentStageLabel = nextLevelObj?.name || cr.current_stage;
+    } else if(action === "reject"){
+      currentStageLabel = "Rejected";
+    } else if(action === "complete_implementation"){
+      currentStageLabel = "Completed";
+    }
+
+    // Send to current stage recipient + all previous participants (backward notification)
+    const emailList = [...new Set(participants.map(p=>p.email))];
+    if(emailList.length > 0){
+      await supabase.functions.invoke("send-email",{body:{
+        template:"cr_stage_notification",
+        to: emailList,
+        data:{
+          cr_id:    cr.id,
+          title:    cr.title,
+          stage:    currentStageLabel,
+          subject:  `${cr.id} - ${cr.title} - ${currentStageLabel}`,
+          action:   `The change request has moved to: ${currentStageLabel}`,
+          note:     note||"",
+          app_url:  "https://facilflowuser.vercel.app",
+        }
+      }});
+    }
+  };
 
   const transCR = useCallback(async (id,ns,note="",extra={})=>{
+    // Legacy wrapper — use advanceCR for new workflow
     try {
       const cr = crs.find(c=>c.id===id);
       const newHistory = [...(cr.history||[]),{
@@ -405,13 +625,22 @@ export default function UserApp({ currentUser }){
     users,
     vehicles,
     drivers,
+    myChangeRoles,
+    approvalLevels,
+    tenantConfig,
+    crUsers,
     submitReq, transReq,
-    submitCR, transCR,
+    submitCR, transCR, advanceCR,
     flash,
   };
 
+  const hasChangeRole = (myChangeRoles||[]).length > 0;
   const visNav = NAV_GROUPS
-    .map(g=>({...g,items:g.items.filter(i=>i.roles.includes(me?.role))}))
+    .map(g=>({...g,items:g.items.filter(i=>{
+      if(!i.roles.includes(me?.role)) return false;
+      if(i.key==='change_requests' && !hasChangeRole) return false;
+      return true;
+    })}))
     .filter(g=>g.items.length);
 
   if(loading) return (
@@ -1160,90 +1389,142 @@ function Queue({ctx}){
 // CHANGE REQUESTS PAGE
 // ══════════════════════════════════════════════════════════════
 function ChangePage({ctx}){
-  const {crs,submitCR,users}=ctx;
-  const [form,  setForm]  = useState(false);
-  const [detail,setDetail]= useState(null);
-  const [f,     setF]     = useState({});
+  const {crs,submitCR,advanceCR,users,myChangeRoles,crUsers,uid,me}=ctx;
+  const [form,   setForm]   = useState(false);
+  const [detail, setDetail] = useState(null);
+  const [tab,    setTab]    = useState("mine");
 
-  const shown = crs.filter(c=>{
-    if(f.status&&c.status!==f.status)return false;
-    if(f.changeType&&c.change_type!==f.changeType)return false;
-    if(f.environment&&c.environment!==f.environment)return false;
-    if(f.initiator&&c.initiator!==f.initiator)return false;
-    if(f.from&&c.created_at<f.from)return false;
-    if(f.to&&c.created_at>f.to+"T23:59:59")return false;
-    if(f.q){const q=f.q.toLowerCase();if(!c.title.toLowerCase().includes(q)&&!c.id.toLowerCase().includes(q))return false;}
-    return true;
-  });
+  const isTech  = myChangeRoles.includes("change_technician");
+  const isMgr   = myChangeRoles.includes("change_manager");
+  const isImpl  = myChangeRoles.includes("change_implementer");
+  const isRevwr = myChangeRoles.includes("change_reviewer");
+  const isApprL1= myChangeRoles.includes("change_approver_l1");
+  const isApprL2= myChangeRoles.includes("change_approver_l2");
+
+  const mine      = crs.filter(c=>c.initiator===uid);
+  const pendingMgr= crs.filter(c=>c.status==="pending_manager" && c.change_manager_id===uid);
+  const pendingL1 = crs.filter(c=>c.current_stage==="pending_level_1" && isApprL1);
+  const pendingL2 = crs.filter(c=>c.current_stage==="pending_level_2" && isApprL2);
+  const forReview = crs.filter(c=>(c.reviewer_ids||[]).includes(uid) && c.status==="pending_manager");
+  const forImpl   = crs.filter(c=>c.status==="pending_implementation" && isImpl);
+
+  const TABS = [
+    {k:"mine",     label:"My Changes",           count:mine.length,      show:isTech},
+    {k:"approve",  label:"Pending My Approval",  count:pendingMgr.length+pendingL1.length+pendingL2.length, show:isMgr||isApprL1||isApprL2},
+    {k:"review",   label:"For Review",           count:forReview.length, show:isRevwr},
+    {k:"implement",label:"Implementation",       count:forImpl.length,   show:isImpl},
+    {k:"all",      label:"All Changes",          count:crs.length,       show:true},
+  ].filter(t=>t.show);
+
+  const activeTab = TABS.find(t=>t.k===tab) ? tab : TABS[0]?.k;
+
+  const getShown = () => {
+    switch(activeTab){
+      case "mine":      return mine;
+      case "approve":   return [...pendingMgr,...pendingL1,...pendingL2];
+      case "review":    return forReview;
+      case "implement": return forImpl;
+      default:          return crs;
+    }
+  };
+  const shown = getShown();
+
+  const stageLabel = c => {
+    if(c.status==="pending_manager")     return "⏳ Awaiting Manager";
+    if(c.status==="pending_approval")    return `⏳ Level ${c.current_level} Review`;
+    if(c.status==="pending_implementation") return "🔧 Ready to Implement";
+    if(c.status==="in_progress")         return "🔄 In Progress";
+    if(c.status==="completed")           return "✅ Completed";
+    if(c.status==="closed")              return "🔒 Closed";
+    if(c.status==="rejected")            return "❌ Rejected";
+    return c.status.replace(/_/g," ");
+  };
 
   return (
-    <div>
-      <PageTitle title="Change Requests" sub="Manage all IT and infrastructure change requests"
-        action={<button onClick={()=>setForm(true)} style={btn("primary")}>+ Raise Change Request</button>}/>
-      <Filters values={f} onChange={setF} fields={[
-        {k:"q",         label:"Search",      type:"text",   w:180, ph:"CR ID or title…"},
-        {k:"status",    label:"Status",      type:"select", w:160, opts:Object.entries(CR_STATUS).map(([v,m])=>({v,l:m.label}))},
-        {k:"changeType",label:"Type",        type:"select", w:130, opts:["Standard","Normal","Emergency"].map(v=>({v,l:v}))},
-        {k:"environment",label:"Environment",type:"select", w:130, opts:["Dev","Staging","Production"].map(v=>({v,l:v}))},
-        {k:"initiator", label:"Requester",   type:"select", w:160, opts:Object.values(users||{}).map(u=>({v:u.id,l:u.name}))},
-        {k:"from",      label:"From",        type:"date",   w:140},
-        {k:"to",        label:"To",          type:"date",   w:140},
-      ]}/>
+    <div style={{display:"flex",flexDirection:"column",gap:16}}>
+      <PageTitle title="Change Requests" sub="Enterprise change management"
+        action={isTech&&<button onClick={()=>setForm(true)} style={btn("primary")}>+ Raise Change Request</button>}/>
+
+      {/* Role tabs */}
+      <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
+        {TABS.map(t=>{
+          const active = activeTab===t.k;
+          return (
+            <button key={t.k} onClick={()=>setTab(t.k)} style={{
+              padding:"6px 14px",borderRadius:20,
+              border:`1.5px solid ${active?C.brand:C.border}`,
+              background:active?C.brandLt:"#fff",
+              color:active?C.brand:C.muted,
+              fontSize:12,fontWeight:active?700:500,
+              cursor:"pointer",fontFamily:"inherit",
+              display:"flex",alignItems:"center",gap:6,
+            }}>
+              {t.label}
+              <span style={{background:active?C.brand:C.surface,color:active?"#fff":C.muted,fontSize:10,fontWeight:700,padding:"1px 6px",borderRadius:10}}>{t.count}</span>
+            </button>
+          );
+        })}
+      </div>
+
+      {/* Table */}
       <div style={card(0)}>
         <table style={{width:"100%",borderCollapse:"collapse"}}>
-          <TH cols={["Change ID","Title","Raised","Last Updated","Requested By","Environment","Stage","Status",""]}/>
+          <TH cols={["CR ID","Title","Type","Environment","Risk","Raised By","Date","Stage","Action"]}/>
           <tbody>
             {shown.length===0
-              ?<tr><td colSpan={9}><Empty icon="🔍" title="No results" sub="Adjust your filters or raise a new CR"/></td></tr>
+              ?<tr><td colSpan={9}><Empty icon="📋" title="No change requests" sub={isTech?"Click '+ Raise Change Request' to create one":"Nothing to action right now"}/></td></tr>
               :shown.map((c,i)=>(
-              <tr key={c.id} style={{borderBottom:i<shown.length-1?`1px solid #FAFAFA`:"none",cursor:"pointer"}}
-                onClick={()=>setDetail(c)}>
-                <td style={{padding:"11px 14px",fontSize:11,fontWeight:700,color:C.ink,whiteSpace:"nowrap"}}>{c.id}</td>
-                <td style={{padding:"11px 14px",fontSize:12,color:C.ink,maxWidth:200}}>
+              <tr key={c.id} style={{borderBottom:i<shown.length-1?`1px solid #F8FAFC`:"none",cursor:"pointer"}} onClick={()=>setDetail(c)}>
+                <td style={{padding:"11px 14px",fontSize:11,fontWeight:700,color:C.ink}}>{c.id}{c.version>1&&<span style={{fontSize:9,color:C.muted,marginLeft:4}}>v{c.version}</span>}</td>
+                <td style={{padding:"11px 14px",fontSize:12,color:C.ink,maxWidth:180}}>
                   <div style={{overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>
-                    {c.is_emergency&&<span style={{color:C.red,marginRight:4,fontSize:11}}>⚡</span>}{c.title}
+                    {c.is_emergency&&<span style={{color:C.red,marginRight:4}}>⚡</span>}{c.title}
                   </div>
                 </td>
-                <td style={{padding:"11px 14px",fontSize:11,color:C.muted,whiteSpace:"nowrap"}}>{fmtD(c.created_at)}</td>
-                <td style={{padding:"11px 14px",fontSize:11,color:C.muted,whiteSpace:"nowrap"}}>{fmtD(c.updated_at)}</td>
-                <td style={{padding:"11px 14px",fontSize:11,color:C.muted}}>{users[c.initiator]?.name}</td>
+                <td style={{padding:"11px 14px",fontSize:11,color:C.muted}}>{c.change_type||c.changeType}</td>
                 <td style={{padding:"11px 14px"}}><EnvTag e={c.environment}/></td>
-                <td style={{padding:"11px 14px",fontSize:11,color:C.muted,whiteSpace:"nowrap"}}>
-                  {(c.stages||[]).filter(s=>s.status==="approved").length}/{(c.stages||[]).length}
+                <td style={{padding:"11px 14px"}}><RiskTag r={c.risk_level||c.riskLevel}/></td>
+                <td style={{padding:"11px 14px",fontSize:11,color:C.muted}}>{users[c.initiator]?.name||"—"}</td>
+                <td style={{padding:"11px 14px",fontSize:11,color:C.muted,whiteSpace:"nowrap"}}>{fmtD(c.created_at)}</td>
+                <td style={{padding:"11px 14px",fontSize:11,color:C.muted,whiteSpace:"nowrap"}}>{stageLabel(c)}</td>
+                <td style={{padding:"11px 14px"}}>
+                  <button onClick={e=>{e.stopPropagation();setDetail(c);}} style={{...btn("ghost"),fontSize:11,padding:"4px 10px"}}>View →</button>
                 </td>
-                <td style={{padding:"11px 14px"}}><CRChip s={c.status}/></td>
-                <td style={{padding:"11px 14px",color:C.muted,fontSize:16}}>›</td>
               </tr>
             ))}
           </tbody>
         </table>
-        <div style={{padding:"9px 14px",borderTop:`1px solid #FAFAFA`,fontSize:11,color:C.muted}}>
-          {shown.length} of {crs.length} records
-        </div>
+        <div style={{padding:"9px 14px",borderTop:`1px solid #F8FAFC`,fontSize:11,color:C.muted}}>{shown.length} records</div>
       </div>
-      {form&&<CRForm onClose={()=>setForm(false)} onSubmit={submitCR}/>}
-      {detail&&<CRDetail cr={detail} onClose={()=>setDetail(null)} ctx={ctx}/>}
+
+      {form&&<CRForm onClose={()=>setForm(false)} onSubmit={submitCR} ctx={ctx}/>}
+      {detail&&<CRDetail cr={detail} onClose={()=>setDetail(null)} ctx={ctx} onAction={advanceCR}/>}
     </div>
   );
 }
 
-// ── CR Form ────────────────────────────────────────────────────
-function CRForm({onClose,onSubmit}){
-  const [step,      setStep]      = useState(1);
-  const [title,     setTitle]     = useState("");
-  const [desc,      setDesc]      = useState("");
-  const [system,    setSystem]    = useState("");
-  const [environment, setEnv]     = useState("Staging");
-  const [deployDate,setDeployDate]= useState("");
-  const [deployStart,setDStart]   = useState("22:00");
-  const [deployEnd,  setDEnd]     = useState("02:00");
-  const [changeType, setCType]    = useState("Normal");
-  const [riskLevel,  setRisk]     = useState("Medium");
-  const [category,   setCat]      = useState("Infrastructure");
-  const [rollback,   setRollback] = useState("");
-  const [testEvidence,setTest]    = useState("");
-  const [attachments,setAttach]   = useState([]);
-  const [errs,       setErrs]     = useState({});
+// ── CR Form — with reviewer selection ──────────────────────────
+
+function CRForm({onClose,onSubmit,ctx}){
+  const {crUsers,myChangeRoles} = ctx||{};
+  const reviewers = (crUsers||{})["change_reviewer"]||[];
+
+  const [step,        setStep]       = useState(1);
+  const [title,       setTitle]      = useState("");
+  const [desc,        setDesc]       = useState("");
+  const [system,      setSystem]     = useState("");
+  const [environment, setEnv]        = useState("Staging");
+  const [deployDate,  setDeployDate] = useState("");
+  const [deployStart, setDStart]     = useState("22:00");
+  const [deployEnd,   setDEnd]       = useState("02:00");
+  const [changeType,  setCType]      = useState("Normal");
+  const [riskLevel,   setRisk]       = useState("Medium");
+  const [category,    setCat]        = useState("Infrastructure");
+  const [rollback,    setRollback]   = useState("");
+  const [testEvidence,setTest]       = useState("");
+  const [attachments, setAttach]     = useState([]);
+  const [reviewerIds, setReviewers]  = useState([]);
+  const [errs,        setErrs]       = useState({});
 
   const validate1 = () => {
     const er = {};
@@ -1251,43 +1532,36 @@ function CRForm({onClose,onSubmit}){
     if(!desc)       er.desc       = "Required";
     if(!system)     er.system     = "Required";
     if(!deployDate) er.deployDate = "Required";
-    setErrs(er);
-    return Object.keys(er).length === 0;
+    setErrs(er); return Object.keys(er).length===0;
   };
   const validate2 = () => {
     const er = {};
     if(!rollback)     er.rollback     = "Required";
     if(!testEvidence) er.testEvidence = "Required";
-    setErrs(er);
-    return Object.keys(er).length === 0;
+    setErrs(er); return Object.keys(er).length===0;
   };
+
+  const toggleReviewer = (id) => setReviewers(p=>p.includes(id)?p.filter(x=>x!==id):[...p,id]);
 
   const handleFiles = (e) => {
     const files = Array.from(e.target.files||[]);
-    setAttach(p=>[...p, ...files.map(f=>({name:f.name,size:f.size,type:f.type}))]);
+    setAttach(p=>[...p,...files.map(f=>({name:f.name,size:f.size,type:f.type}))]);
   };
 
-  const removeFile = (i) => setAttach(p=>p.filter((_,j)=>j!==i));
-
-  const STEPS = ["Request Details","Risk & Rollback","Review & Submit"];
-
-  const approvalRoute = changeType==="Emergency"
-    ? "Emergency → Senior Approval → Scheduled"
-    : "Draft → Line Manager (L1) → Secondary Manager (L2) → Change Review Board → Scheduled";
-
   const handleSubmit = () => {
-    onSubmit({
-      title, desc, system, environment,
-      deployDate, deployStart, deployEnd,
-      changeType, riskLevel, category,
-      rollback, testEvidence, attachments,
-    });
+    onSubmit({title,desc,system,environment,deployDate,deployStart,deployEnd,
+      changeType,riskLevel,category,rollback,testEvidence,attachments,reviewerIds});
     onClose();
   };
 
+  const STEPS = ["Request Details","Risk & Rollback","Review & Submit"];
+  const approvalRoute = changeType==="Emergency"
+    ? "Emergency → Change Manager → Level 1 → Implementer"
+    : "Draft → Change Manager → Level 1 → Level 2 → Implementer";
+
   return (
-    <Modal title="Raise Change Request" sub={`Step ${step} of 3 — ${STEPS[step-1]}`} onClose={onClose} w={700}>
-      {/* Progress bar */}
+    <Modal title="Raise Change Request" sub={`Step ${step} of 3 — ${STEPS[step-1]}`} onClose={onClose} w={720}>
+      {/* Progress */}
       <div style={{display:"flex",gap:0,marginBottom:22}}>
         {STEPS.map((sl,i)=>(
           <div key={i} style={{flex:1,display:"flex",alignItems:"center",flexDirection:"column",gap:5}}>
@@ -1302,209 +1576,156 @@ function CRForm({onClose,onSubmit}){
         ))}
       </div>
 
-      {/* ── STEP 1: Request Details ── */}
       {step===1&&(
         <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:14}}>
-          {/* Title */}
           <div style={{gridColumn:"1/-1"}}>
             <label style={LBL}>Change Title{errs.title&&<span style={{color:C.red,fontWeight:400,textTransform:"none"}}> · {errs.title}</span>}</label>
             <input value={title} onChange={e=>setTitle(e.target.value)} placeholder="e.g. Azure API Gateway v2 Upgrade" style={inp(!!errs.title)}/>
           </div>
-
-          {/* Change Type */}
           <div style={{gridColumn:"1/-1"}}>
             <label style={LBL}>Change Type</label>
             <div style={{display:"flex",gap:10}}>
-              {[{v:"Standard",icon:"⬡",desc:"Pre-approved, low risk"},{v:"Normal",icon:"◈",desc:"Full approval workflow"},{v:"Emergency",icon:"⚡",desc:"Bypass L2 — senior only"}].map(t=>{
-                const active = changeType===t.v;
-                const tc = {Standard:C.blue,Normal:C.violet,Emergency:C.red}[t.v];
-                return (
-                  <button key={t.v} onClick={()=>setCType(t.v)} style={{flex:1,padding:"11px 8px",
-                    border:`1.5px solid ${active?tc:C.border}`,borderRadius:8,
-                    background:active?tc+"0D":"#fff",cursor:"pointer",fontFamily:"inherit"}}>
-                    <div style={{fontSize:18,marginBottom:3}}>{t.icon}</div>
-                    <div style={{fontSize:12,fontWeight:700,color:active?tc:C.ink2}}>{t.v}</div>
-                    <div style={{fontSize:10,color:C.muted,marginTop:1}}>{t.desc}</div>
-                  </button>
-                );
+              {[{v:"Standard",icon:"⬡",desc:"Pre-approved, low risk"},{v:"Normal",icon:"◈",desc:"Full approval workflow"},{v:"Major",icon:"◉",desc:"Full chain + L2 approval"},{v:"Emergency",icon:"⚡",desc:"Bypass L2 — senior only"}].map(t=>{
+                const active=changeType===t.v;
+                const tc={Standard:C.blue,Normal:C.violet,Major:C.orange,Emergency:C.red}[t.v];
+                return <button key={t.v} onClick={()=>setCType(t.v)} style={{flex:1,padding:"10px 8px",border:`1.5px solid ${active?tc:C.border}`,borderRadius:8,background:active?tc+"0D":"#fff",cursor:"pointer",fontFamily:"inherit"}}>
+                  <div style={{fontSize:16,marginBottom:2}}>{t.icon}</div>
+                  <div style={{fontSize:11,fontWeight:700,color:active?tc:C.ink2}}>{t.v}</div>
+                  <div style={{fontSize:9,color:C.muted,marginTop:1}}>{t.desc}</div>
+                </button>;
               })}
             </div>
           </div>
-
-          {/* Environment */}
           <div>
             <label style={LBL}>Environment</label>
             <select value={environment} onChange={e=>setEnv(e.target.value)} style={inp()}>
               {["Dev","Staging","Production"].map(o=><option key={o} value={o}>{o}</option>)}
             </select>
           </div>
-
-          {/* Risk Level */}
           <div>
             <label style={LBL}>Risk Level</label>
             <select value={riskLevel} onChange={e=>setRisk(e.target.value)} style={inp()}>
               {["Low","Medium","High"].map(o=><option key={o} value={o}>{o}</option>)}
             </select>
           </div>
-
-          {/* Category */}
           <div>
             <label style={LBL}>Category</label>
             <select value={category} onChange={e=>setCat(e.target.value)} style={inp()}>
               {["Infrastructure","Application","Security","Database","Network","Compliance"].map(o=><option key={o} value={o}>{o}</option>)}
             </select>
           </div>
-
-          {/* System */}
           <div>
             <label style={LBL}>System / Service{errs.system&&<span style={{color:C.red,fontWeight:400,textTransform:"none"}}> · {errs.system}</span>}</label>
             <input value={system} onChange={e=>setSystem(e.target.value)} placeholder="e.g. Azure API Gateway" style={inp(!!errs.system)}/>
           </div>
-
-          {/* Description */}
           <div style={{gridColumn:"1/-1"}}>
             <label style={LBL}>Description{errs.desc&&<span style={{color:C.red,fontWeight:400,textTransform:"none"}}> · {errs.desc}</span>}</label>
             <textarea value={desc} onChange={e=>setDesc(e.target.value)} placeholder="What will be changed and why…" style={{...inp(!!errs.desc),minHeight:80,resize:"vertical"}}/>
           </div>
-
-          {/* Deploy Date */}
           <div>
             <label style={LBL}>Deployment Date{errs.deployDate&&<span style={{color:C.red,fontWeight:400,textTransform:"none"}}> · {errs.deployDate}</span>}</label>
             <input type="date" value={deployDate} onChange={e=>setDeployDate(e.target.value)} style={inp(!!errs.deployDate)}/>
           </div>
-
-          {/* Deploy Window */}
           <div style={{display:"flex",gap:8}}>
-            <div style={{flex:1}}>
-              <label style={LBL}>Start Time</label>
-              <input type="time" value={deployStart} onChange={e=>setDStart(e.target.value)} style={inp()}/>
-            </div>
-            <div style={{flex:1}}>
-              <label style={LBL}>End Time</label>
-              <input type="time" value={deployEnd} onChange={e=>setDEnd(e.target.value)} style={inp()}/>
-            </div>
+            <div style={{flex:1}}><label style={LBL}>Start Time</label><input type="time" value={deployStart} onChange={e=>setDStart(e.target.value)} style={inp()}/></div>
+            <div style={{flex:1}}><label style={LBL}>End Time</label><input type="time" value={deployEnd} onChange={e=>setDEnd(e.target.value)} style={inp()}/></div>
           </div>
+
+          {/* Reviewers — optional */}
+          {reviewers.length>0&&(
+            <div style={{gridColumn:"1/-1"}}>
+              <label style={LBL}>Change Reviewers (optional) — advisory only</label>
+              <div style={{display:"flex",gap:8,flexWrap:"wrap",marginTop:4}}>
+                {reviewers.map(r=>{
+                  const sel = reviewerIds.includes(r.id);
+                  return (
+                    <button key={r.id} onClick={()=>toggleReviewer(r.id)} style={{
+                      display:"flex",alignItems:"center",gap:7,padding:"6px 12px",
+                      border:`1.5px solid ${sel?C.green:C.border}`,borderRadius:8,
+                      background:sel?C.greenBg:"#fff",cursor:"pointer",fontFamily:"inherit"}}>
+                      <Av i={r.initials||"?"} s={22} bg={sel?C.green:C.muted}/>
+                      <div style={{textAlign:"left"}}>
+                        <div style={{fontSize:12,fontWeight:600,color:sel?C.green:C.ink}}>{r.name}</div>
+                        <div style={{fontSize:10,color:C.muted}}>{r.dept}</div>
+                      </div>
+                      {sel&&<span style={{fontSize:11,color:C.green,marginLeft:2}}>✓</span>}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
         </div>
       )}
 
-      {/* ── STEP 2: Risk & Rollback ── */}
       {step===2&&(
         <div style={{display:"flex",flexDirection:"column",gap:14}}>
-          {/* Risk banner */}
           <div style={{padding:"11px 14px",borderRadius:7,fontSize:12,fontWeight:600,
             background:riskLevel==="High"?C.redBg:riskLevel==="Medium"?C.amberBg:C.greenBg,
             color:riskLevel==="High"?C.red:riskLevel==="Medium"?C.amber:C.green}}>
-            {riskLevel} Risk — Approval route: {approvalRoute}
+            {riskLevel} Risk — Route: {approvalRoute}
           </div>
-
-          {/* Rollback */}
           <div>
             <label style={LBL}>Rollback Plan{errs.rollback&&<span style={{color:C.red,fontWeight:400,textTransform:"none"}}> · {errs.rollback}</span>}</label>
-            <textarea value={rollback} onChange={e=>setRollback(e.target.value)}
-              placeholder="Step-by-step instructions to revert if something goes wrong. Include estimated time to roll back…"
-              style={{...inp(!!errs.rollback),minHeight:90,resize:"vertical"}}/>
+            <textarea value={rollback} onChange={e=>setRollback(e.target.value)} placeholder="Step-by-step instructions to revert if something goes wrong…" style={{...inp(!!errs.rollback),minHeight:90,resize:"vertical"}}/>
           </div>
-
-          {/* Test Evidence */}
           <div>
             <label style={LBL}>Testing Evidence{errs.testEvidence&&<span style={{color:C.red,fontWeight:400,textTransform:"none"}}> · {errs.testEvidence}</span>}</label>
-            <textarea value={testEvidence} onChange={e=>setTest(e.target.value)}
-              placeholder="UAT results, staging test outcomes, performance benchmarks, sign-off references…"
-              style={{...inp(!!errs.testEvidence),minHeight:90,resize:"vertical"}}/>
+            <textarea value={testEvidence} onChange={e=>setTest(e.target.value)} placeholder="UAT results, staging tests, performance benchmarks…" style={{...inp(!!errs.testEvidence),minHeight:90,resize:"vertical"}}/>
           </div>
-
-          {/* File Attachments */}
           <div>
             <label style={LBL}>Attachments (optional)</label>
-            <label style={{display:"flex",alignItems:"center",gap:10,padding:"14px 16px",
-              border:`2px dashed ${C.border}`,borderRadius:8,cursor:"pointer",
-              background:"#FAFAFA",color:C.muted,fontSize:12,fontWeight:500}}>
+            <label style={{display:"flex",alignItems:"center",gap:10,padding:"14px 16px",border:`2px dashed ${C.border}`,borderRadius:8,cursor:"pointer",background:"#FAFAFA",color:C.muted,fontSize:12}}>
               <span style={{fontSize:20}}>📎</span>
-              <div>
-                <div style={{fontWeight:600,color:C.ink}}>Click to attach files</div>
-                <div style={{fontSize:11,marginTop:2}}>Deployment plans, diagrams, test evidence, screenshots</div>
-              </div>
-              <input type="file" multiple accept=".pdf,.doc,.docx,.xls,.xlsx,.png,.jpg,.jpeg,.txt"
-                onChange={handleFiles} style={{display:"none"}}/>
+              <div><div style={{fontWeight:600,color:C.ink}}>Click to attach files</div><div style={{fontSize:11,marginTop:2}}>Plans, diagrams, test evidence, screenshots</div></div>
+              <input type="file" multiple accept=".pdf,.doc,.docx,.xls,.xlsx,.png,.jpg,.jpeg,.txt" onChange={handleFiles} style={{display:"none"}}/>
             </label>
-            {attachments.length>0&&(
-              <div style={{marginTop:8,display:"flex",flexDirection:"column",gap:5}}>
-                {attachments.map((f,i)=>(
-                  <div key={i} style={{display:"flex",justifyContent:"space-between",alignItems:"center",
-                    padding:"7px 12px",background:"#F8FAFC",borderRadius:6,border:`1px solid ${C.border}`}}>
-                    <div style={{display:"flex",alignItems:"center",gap:8}}>
-                      <span style={{fontSize:14}}>📄</span>
-                      <div>
-                        <div style={{fontSize:12,fontWeight:600,color:C.ink}}>{f.name}</div>
-                        <div style={{fontSize:10,color:C.muted}}>{(f.size/1024).toFixed(1)} KB</div>
-                      </div>
-                    </div>
-                    <button onClick={()=>removeFile(i)} style={{...btn("ghost"),padding:"3px 7px",fontSize:11,color:C.red}}>✕</button>
-                  </div>
-                ))}
-              </div>
-            )}
+            {attachments.length>0&&<div style={{marginTop:8,display:"flex",flexDirection:"column",gap:5}}>
+              {attachments.map((f,i)=>(
+                <div key={i} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"7px 12px",background:"#F8FAFC",borderRadius:6,border:`1px solid ${C.border}`}}>
+                  <div style={{display:"flex",alignItems:"center",gap:8}}><span>📄</span><div><div style={{fontSize:12,fontWeight:600,color:C.ink}}>{f.name}</div><div style={{fontSize:10,color:C.muted}}>{(f.size/1024).toFixed(1)} KB</div></div></div>
+                  <button onClick={()=>setAttach(p=>p.filter((_,j)=>j!==i))} style={{...btn("ghost"),padding:"3px 7px",fontSize:11,color:C.red}}>✕</button>
+                </div>
+              ))}
+            </div>}
           </div>
         </div>
       )}
 
-      {/* ── STEP 3: Review & Submit ── */}
       {step===3&&(
-        <div style={{display:"flex",flexDirection:"column",gap:14}}>
-          {/* Full summary */}
+        <div style={{display:"flex",flexDirection:"column",gap:12}}>
           <div style={{background:C.pageBg,borderRadius:8,padding:16}}>
             <div style={{fontSize:13,fontWeight:700,color:C.ink,marginBottom:12}}>Review Summary</div>
             <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
-              {[
-                ["Title",       title],
-                ["System",      system],
-                ["Environment", environment],
-                ["Change Type", changeType],
-                ["Risk Level",  riskLevel],
-                ["Category",    category],
-                ["Deploy Date", deployDate],
-                ["Time Window", `${deployStart} – ${deployEnd}`],
-              ].map(([k,v])=>(
-                <div key={k} style={{background:"#fff",padding:"8px 11px",borderRadius:6,border:`1px solid ${C.border}`,
-                  gridColumn:k==="Title"?"1/-1":"auto"}}>
+              {[["Title",title],["System",system],["Environment",environment],["Type",changeType],["Risk",riskLevel],["Category",category],["Deploy Date",deployDate],["Time Window",`${deployStart} – ${deployEnd}`]].map(([k,v])=>(
+                <div key={k} style={{background:"#fff",padding:"8px 11px",borderRadius:6,border:`1px solid ${C.border}`,gridColumn:k==="Title"?"1/-1":"auto"}}>
                   <div style={{fontSize:10,color:C.muted,fontWeight:700,textTransform:"uppercase",letterSpacing:".06em"}}>{k}</div>
                   <div style={{fontSize:12,fontWeight:600,color:C.ink,marginTop:2}}>{v||"—"}</div>
                 </div>
               ))}
             </div>
           </div>
-
-          {/* Description */}
           <div style={{background:"#fff",border:`1px solid ${C.border}`,borderRadius:8,padding:"12px 14px"}}>
             <div style={{fontSize:10,color:C.muted,fontWeight:700,textTransform:"uppercase",letterSpacing:".06em",marginBottom:6}}>Description</div>
             <div style={{fontSize:13,color:C.ink,lineHeight:1.6,whiteSpace:"pre-wrap"}}>{desc||"—"}</div>
           </div>
-
-          {/* Rollback */}
           <div style={{background:"#fff",border:`1px solid ${C.border}`,borderRadius:8,padding:"12px 14px"}}>
             <div style={{fontSize:10,color:C.muted,fontWeight:700,textTransform:"uppercase",letterSpacing:".06em",marginBottom:6}}>Rollback Plan</div>
             <div style={{fontSize:13,color:C.ink,lineHeight:1.6,whiteSpace:"pre-wrap"}}>{rollback||"—"}</div>
           </div>
-
-          {/* Test Evidence */}
           <div style={{background:"#fff",border:`1px solid ${C.border}`,borderRadius:8,padding:"12px 14px"}}>
             <div style={{fontSize:10,color:C.muted,fontWeight:700,textTransform:"uppercase",letterSpacing:".06em",marginBottom:6}}>Testing Evidence</div>
             <div style={{fontSize:13,color:C.ink,lineHeight:1.6,whiteSpace:"pre-wrap"}}>{testEvidence||"—"}</div>
           </div>
-
-          {/* Attachments */}
-          {attachments.length>0&&(
-            <div style={{background:"#fff",border:`1px solid ${C.border}`,borderRadius:8,padding:"12px 14px"}}>
-              <div style={{fontSize:10,color:C.muted,fontWeight:700,textTransform:"uppercase",letterSpacing:".06em",marginBottom:8}}>Attachments ({attachments.length})</div>
-              {attachments.map((f,i)=>(
-                <div key={i} style={{fontSize:12,color:C.ink,padding:"3px 0"}}>{f.name} <span style={{color:C.muted}}>({(f.size/1024).toFixed(1)} KB)</span></div>
-              ))}
-            </div>
-          )}
-
-          {/* Approval route */}
-          <div style={{padding:"12px 14px",borderRadius:8,fontSize:12,background:C.violetBg,
-            border:`1px solid ${C.violet}22`,color:C.violet,fontWeight:600,lineHeight:1.7}}>
+          {attachments.length>0&&<div style={{background:"#fff",border:`1px solid ${C.border}`,borderRadius:8,padding:"12px 14px"}}>
+            <div style={{fontSize:10,color:C.muted,fontWeight:700,textTransform:"uppercase",letterSpacing:".06em",marginBottom:8}}>Attachments ({attachments.length})</div>
+            {attachments.map((f,i)=><div key={i} style={{fontSize:12,color:C.ink,padding:"2px 0"}}>{f.name} <span style={{color:C.muted}}>({(f.size/1024).toFixed(1)} KB)</span></div>)}
+          </div>}
+          {reviewerIds.length>0&&<div style={{background:"#fff",border:`1px solid ${C.border}`,borderRadius:8,padding:"12px 14px"}}>
+            <div style={{fontSize:10,color:C.muted,fontWeight:700,textTransform:"uppercase",letterSpacing:".06em",marginBottom:8}}>Reviewers Selected</div>
+            {reviewerIds.map(id=>{const r=reviewers.find(x=>x.id===id);return r?<div key={id} style={{fontSize:12,color:C.ink,padding:"2px 0"}}>{r.name}</div>:null;})}
+          </div>}
+          <div style={{padding:"12px 14px",borderRadius:8,fontSize:12,background:C.violetBg,border:`1px solid ${C.violet}22`,color:C.violet,fontWeight:600,lineHeight:1.7}}>
             <div style={{marginBottom:4}}>📋 Approval Route</div>
             <div style={{fontWeight:500}}>{approvalRoute}</div>
           </div>
@@ -1521,286 +1742,271 @@ function CRForm({onClose,onSubmit}){
   );
 }
 
-// ── CR Detail Modal ────────────────────────────────────────────
-function CRDetail({cr,onClose,ctx}){
-  const {me,uid,transCR,flash,users}=ctx;
-  const [tab,  setTab]  = useState("details");
-  const [note, setNote] = useState("");
-  const [impl, setImpl] = useState(cr.implementationNotes||"");
-  const [out,  setOut]  = useState(cr.reviewOutcome||"");
-  const [les,  setLes]  = useState(cr.lessonsLearned||"");
+// ── CR Detail Modal — with Stage Tracker ──────────────────────
+function CRDetail({cr,onClose,ctx,onAction}){
+  const {me,uid,users,crUsers,approvalLevels} = ctx;
+  const [tab,       setTab]     = useState("details");
+  const [note,      setNote]    = useState("");
+  const [implNotes, setImplNotes]= useState(cr.implementation_notes||"");
+  const [outcome,   setOutcome] = useState(cr.implementation_outcome||"successful");
+  const [comment,   setComment] = useState("");
+  const [saving,    setSaving]  = useState(false);
 
-  const isMgr = ["manager","resource_team"].includes(me.role);
-  const canL1  = isMgr && cr.status==="pending_line_manager";
-  const canL2  = isMgr && cr.status==="pending_secondary";
-  const canRev = me.role==="resource_team" && cr.status==="change_review";
-  const canSt  = me.role==="resource_team" && cr.status==="scheduled";
-  const canCmp = me.role==="resource_team" && cr.status==="in_progress";
-  const canPR  = isMgr && cr.status==="completed";
-  const canCls = isMgr && cr.status==="post_review";
+  const myRoles   = ctx.myChangeRoles||[];
+  const isMgr     = myRoles.includes("change_manager") && cr.change_manager_id===uid;
+  const isApprL1  = myRoles.includes("change_approver_l1");
+  const isApprL2  = myRoles.includes("change_approver_l2");
+  const isImpl    = myRoles.includes("change_implementer");
+  const isRevwr   = myRoles.includes("change_reviewer") && (cr.reviewer_ids||[]).includes(uid);
+  const isTech    = cr.initiator===uid;
 
-  const TABS=["details","approvals","history","attachments","comments"];
+  const canMgrApprove  = isMgr  && cr.status==="pending_manager";
+  const canL1Approve   = isApprL1 && cr.current_stage==="pending_level_1";
+  const canL2Approve   = isApprL2 && cr.current_stage==="pending_level_2";
+  const canStartImpl   = isImpl && cr.status==="pending_implementation";
+  const canCompleteImpl= isImpl && cr.status==="in_progress";
+  const canReview      = isRevwr && cr.status==="pending_manager";
 
-  const fileIcon=e=>({pdf:"📄",img:"🖼️",doc:"📝",code:"📋"}[e]||"📎");
+  const mgr   = users[cr.change_manager_id];
+  const tech  = users[cr.initiator];
+
+  const doAction = async (action, extra={}) => {
+    setSaving(true);
+    try { await onAction(cr.id, action, note, extra); onClose(); }
+    catch(e){ setSaving(false); }
+  };
+
+  // ── STAGE TRACKER ──────────────────────────────────────
+  const levels = cr.level_approvals||[];
+  const stages = [
+    {key:"submitted",       label:"Submitted",       done: true,                                                    at:cr.created_at},
+    {key:"pending_manager", label:"Change Manager",  done: cr.status!=="pending_manager"&&cr.status!=="rejected",  at:cr.history?.find(h=>h.s==="pending_approval")?.at, who:mgr?.name},
+    ...(levels.map(l=>({
+      key:`level_${l.level}`,
+      label: l.name,
+      done: l.status==="approved",
+      active: cr.current_stage===`pending_level_${l.level}`,
+      at: l.approved_at,
+      who: users[l.approver_id]?.name,
+    }))),
+    {key:"implementation",  label:"Implementation",  done: ["completed","closed"].includes(cr.status), active: cr.status==="pending_implementation"||cr.status==="in_progress", at:cr.implementation_completed_at},
+    {key:"closed",          label:"Closed",          done: cr.status==="closed",                                    at:cr.history?.find(h=>h.s==="closed")?.at},
+  ];
+  const isRejected = cr.status==="rejected";
 
   return (
-    <Modal title={cr.id} sub={cr.title} onClose={onClose} w={820}>
-      {/* Banner */}
-      <div style={{display:"flex",gap:8,flexWrap:"wrap",marginBottom:16,padding:"10px 12px",
-        background:cr.isEmergency?C.redBg:C.pageBg,borderRadius:8,
-        border:`1px solid ${cr.isEmergency?"#FCA5A5":C.border}`}}>
-        {cr.isEmergency&&<span style={{fontSize:11,fontWeight:700,color:C.red,background:"#fff",padding:"2px 7px",borderRadius:4,border:`1px solid ${C.red}30`}}>⚡ EMERGENCY</span>}
+    <Modal title={`${cr.id}${cr.version>1?` v${cr.version}`:""}`} sub={cr.title} onClose={onClose} w={860}>
+      {/* Header badges */}
+      <div style={{display:"flex",gap:8,flexWrap:"wrap",marginBottom:16,padding:"10px 12px",background:C.pageBg,borderRadius:8}}>
+        {cr.is_emergency&&<span style={{fontSize:11,fontWeight:700,color:C.red,background:"#fff",padding:"2px 8px",borderRadius:4,border:`1px solid ${C.red}30`}}>⚡ EMERGENCY</span>}
         <CRChip s={cr.status}/>
-        <span style={{fontSize:11,fontWeight:600,padding:"2px 8px",borderRadius:4,background:"#fff",border:`1px solid ${C.border}`,color:C.muted}}>{cr.changeType}</span>
         <EnvTag e={cr.environment}/>
-        <RiskTag r={cr.riskLevel}/>
-        <span style={{fontSize:11,padding:"2px 8px",borderRadius:4,background:"#fff",border:`1px solid ${C.border}`,color:C.muted}}>🖥 {cr.system}</span>
+        <RiskTag r={cr.risk_level||cr.riskLevel}/>
+        <span style={{fontSize:11,padding:"2px 8px",borderRadius:4,background:"#fff",border:`1px solid ${C.border}`,color:C.muted,fontWeight:600}}>{cr.change_type||cr.changeType}</span>
+        {cr.system_name&&<span style={{fontSize:11,padding:"2px 8px",borderRadius:4,background:"#fff",border:`1px solid ${C.border}`,color:C.muted}}>🖥 {cr.system_name}</span>}
+      </div>
+
+      {/* ── STAGE TRACKER ── */}
+      <div style={{background:"#fff",border:`1px solid ${C.border}`,borderRadius:10,padding:"16px 20px",marginBottom:16}}>
+        <div style={{fontSize:11,fontWeight:700,color:C.muted,textTransform:"uppercase",letterSpacing:".07em",marginBottom:14}}>Change Progress</div>
+        {isRejected?(
+          <div style={{padding:"10px 14px",background:C.redBg,borderRadius:8,fontSize:13,color:C.red,fontWeight:600}}>
+            ❌ This change request was rejected. A new CR must be raised to proceed.
+          </div>
+        ):(
+          <div style={{display:"flex",alignItems:"flex-start",overflowX:"auto",paddingBottom:4}}>
+            {stages.map((s,i)=>{
+              const isActive = s.active || (i===0 && cr.status==="pending_manager" && !s.done);
+              const color = s.done?C.green:isActive?C.brand:C.muted;
+              return (
+                <React.Fragment key={s.key}>
+                  <div style={{display:"flex",flexDirection:"column",alignItems:"center",gap:6,minWidth:90,flexShrink:0}}>
+                    <div style={{width:32,height:32,borderRadius:"50%",display:"flex",alignItems:"center",justifyContent:"center",
+                      background:s.done?C.green:isActive?C.brand:C.border,
+                      color:s.done||isActive?"#fff":C.muted,
+                      fontSize:14,fontWeight:700,
+                      boxShadow:isActive?`0 0 0 3px ${C.brand}30`:s.done?`0 0 0 3px ${C.green}20`:"none"}}>
+                      {s.done?"✓":isActive?"●":"○"}
+                    </div>
+                    <div style={{fontSize:10,fontWeight:700,color,textAlign:"center",lineHeight:1.3}}>{s.label}</div>
+                    {s.who&&<div style={{fontSize:9,color:C.muted,textAlign:"center"}}>{s.who}</div>}
+                    {s.at&&s.done&&<div style={{fontSize:9,color:C.muted}}>{fmtD(s.at)}</div>}
+                    {isActive&&<div style={{fontSize:9,color:C.brand,fontWeight:600}}>← Current</div>}
+                  </div>
+                  {i<stages.length-1&&(
+                    <div style={{flex:1,height:2,background:s.done?C.green:C.border,marginTop:15,minWidth:20,flexShrink:1}}/>
+                  )}
+                </React.Fragment>
+              );
+            })}
+          </div>
+        )}
       </div>
 
       {/* Tabs */}
-      <div style={{display:"flex",borderBottom:`1px solid ${C.border}`,marginBottom:18}}>
-        {TABS.map(t=>{
-          const cnt=t==="attachments"?cr.attachments?.length:t==="comments"?cr.comments?.length:null;
-          return (
-            <button key={t} onClick={()=>setTab(t)} style={{padding:"7px 15px",border:"none",cursor:"pointer",
-              fontFamily:"inherit",fontSize:12,fontWeight:tab===t?700:500,
-              background:"transparent",color:tab===t?C.brand:C.muted,
-              borderBottom:tab===t?`2px solid ${C.brand}`:"2px solid transparent",
-              marginBottom:-1,textTransform:"capitalize",display:"flex",gap:4,alignItems:"center"}}>
-              {t.replace("_"," ")}
-              {cnt>0&&<span style={{background:C.brandLt,color:C.brand,borderRadius:10,padding:"0 5px",fontSize:10}}>{cnt}</span>}
-            </button>
-          );
-        })}
+      <div style={{display:"flex",borderBottom:`1px solid ${C.border}`,marginBottom:16}}>
+        {["details","approvals","history","comments"].map(t=>(
+          <button key={t} onClick={()=>setTab(t)} style={{padding:"7px 15px",border:"none",cursor:"pointer",fontFamily:"inherit",fontSize:12,fontWeight:tab===t?700:500,background:"transparent",color:tab===t?C.brand:C.muted,borderBottom:tab===t?`2px solid ${C.brand}`:"2px solid transparent",marginBottom:-1,textTransform:"capitalize"}}>{t}</button>
+        ))}
       </div>
 
-      {/* Tab content */}
+      {/* Details tab */}
       {tab==="details"&&(
-        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:16}}>
-          <div style={{gridColumn:"1/-1"}}>
-            <label style={LBL}>Description</label>
-            <div style={{background:C.pageBg,borderRadius:7,padding:"11px 13px",fontSize:13,color:C.ink2,lineHeight:1.6}}>{cr.description}</div>
+        <div style={{display:"flex",flexDirection:"column",gap:14}}>
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
+            {[["Change Type",cr.change_type||cr.changeType],["Risk Level",cr.risk_level||cr.riskLevel],["Environment",cr.environment],["Category",cr.category],["System",cr.system_name||cr.systemName],["Deploy Date",cr.deploy_date||cr.deployDate],["Deploy Window",`${cr.deploy_start||cr.deployStart||""} – ${cr.deploy_end||cr.deployEnd||""}`],["Raised By",tech?.name||"—"],["Change Manager",mgr?.name||"Not assigned"]].map(([k,v])=>v?(
+              <div key={k} style={{background:C.pageBg,borderRadius:7,padding:"10px 12px"}}>
+                <div style={{fontSize:10,fontWeight:700,color:C.muted,textTransform:"uppercase",letterSpacing:".06em",marginBottom:3}}>{k}</div>
+                <div style={{fontSize:13,color:C.ink,fontWeight:500}}>{String(v)}</div>
+              </div>
+            ):null)}
           </div>
-          <div>
-            <label style={LBL}>Deployment Window</label>
-            <div style={{background:C.pageBg,borderRadius:7,padding:"11px 13px"}}>
-              <div style={{fontSize:14,fontWeight:700,color:C.ink}}>{fmtD(cr.deployDate+"T12:00:00")}</div>
-              <div style={{fontSize:12,color:C.muted,marginTop:2}}>{cr.deployStart} – {cr.deployEnd}</div>
-            </div>
-          </div>
-          <div>
-            <label style={LBL}>Initiated By</label>
-            <div style={{background:C.pageBg,borderRadius:7,padding:"11px 13px",display:"flex",gap:9,alignItems:"center"}}>
-              <Av i={users[cr.initiator]?.initials||"??"} s={28}/>
-              <div><div style={{fontSize:12,fontWeight:600,color:C.ink}}>{users[cr.initiator]?.name}</div><div style={{fontSize:11,color:C.muted}}>{users[cr.initiator]?.dept}</div></div>
-            </div>
-          </div>
-          <div>
-            <label style={LBL}>Rollback Plan</label>
-            <div style={{background:C.pageBg,borderRadius:7,padding:"11px 13px",fontSize:12,color:C.ink2,lineHeight:1.5}}>{cr.rollback||"—"}</div>
-          </div>
-          <div>
-            <label style={LBL}>Testing Evidence</label>
-            <div style={{background:C.pageBg,borderRadius:7,padding:"11px 13px",fontSize:12,color:C.ink2,lineHeight:1.5}}>{cr.testEvidence||"—"}</div>
-          </div>
-          {canCmp&&(
-            <div style={{gridColumn:"1/-1"}}>
-              <label style={LBL}>Implementation Notes</label>
-              <textarea value={impl} onChange={e=>setImpl(e.target.value)} style={{...inp(),minHeight:80,resize:"vertical"}} placeholder="Log deployment steps, observations, issues…"/>
-            </div>
-          )}
+          {cr.description&&<div style={{background:C.pageBg,borderRadius:7,padding:"12px 14px"}}><div style={{fontSize:10,fontWeight:700,color:C.muted,textTransform:"uppercase",letterSpacing:".06em",marginBottom:6}}>Description</div><div style={{fontSize:13,color:C.ink,lineHeight:1.7,whiteSpace:"pre-wrap"}}>{cr.description}</div></div>}
+          {cr.rollback&&<div style={{background:C.pageBg,borderRadius:7,padding:"12px 14px"}}><div style={{fontSize:10,fontWeight:700,color:C.muted,textTransform:"uppercase",letterSpacing:".06em",marginBottom:6}}>Rollback Plan</div><div style={{fontSize:13,color:C.ink,lineHeight:1.7,whiteSpace:"pre-wrap"}}>{cr.rollback}</div></div>}
+          {cr.test_evidence&&<div style={{background:C.pageBg,borderRadius:7,padding:"12px 14px"}}><div style={{fontSize:10,fontWeight:700,color:C.muted,textTransform:"uppercase",letterSpacing:".06em",marginBottom:6}}>Testing Evidence</div><div style={{fontSize:13,color:C.ink,lineHeight:1.7,whiteSpace:"pre-wrap"}}>{cr.test_evidence}</div></div>}
+          {/* Implementation feedback if completed */}
+          {cr.implementation_notes&&<div style={{background:C.greenBg,border:`1px solid ${C.green}30`,borderRadius:7,padding:"12px 14px"}}>
+            <div style={{fontSize:10,fontWeight:700,color:C.green,textTransform:"uppercase",letterSpacing:".06em",marginBottom:6}}>Implementation Notes</div>
+            <div style={{fontSize:13,color:C.ink,lineHeight:1.7}}>{cr.implementation_notes}</div>
+            {cr.implementation_outcome&&<div style={{marginTop:8,fontSize:12,fontWeight:700,color:cr.implementation_outcome==="failed"?C.red:C.green}}>Outcome: {cr.implementation_outcome}</div>}
+          </div>}
         </div>
       )}
 
+      {/* Approvals tab */}
       {tab==="approvals"&&(
         <div style={{display:"flex",flexDirection:"column",gap:10}}>
-          {(cr.stages||[]).map((st,i)=>(
-            <div key={i} style={{display:"flex",gap:12,alignItems:"center",padding:"13px 14px",
-              background:C.pageBg,borderRadius:8,
-              border:`1px solid ${st.status==="approved"?C.green+"40":st.status==="rejected"?C.red+"40":C.border}`}}>
-              <div style={{width:28,height:28,borderRadius:"50%",flexShrink:0,
-                background:st.status==="approved"?C.greenBg:st.status==="rejected"?C.redBg:"#fff",
-                border:`2px solid ${st.status==="approved"?C.green:st.status==="rejected"?C.red:C.borderDk}`,
-                display:"flex",alignItems:"center",justifyContent:"center",fontSize:13}}>
-                {st.status==="approved"?"✓":st.status==="rejected"?"✕":st.n}
+          <div style={{background:C.pageBg,borderRadius:8,padding:14}}>
+            <div style={{fontSize:12,fontWeight:700,color:C.ink,marginBottom:10}}>Change Manager</div>
+            <div style={{display:"flex",alignItems:"center",gap:10}}>
+              <Av i={mgr?.initials||"?"} s={32}/>
+              <div>
+                <div style={{fontSize:13,fontWeight:600,color:C.ink}}>{mgr?.name||"Not assigned"}</div>
+                <div style={{fontSize:11,color:C.muted}}>{mgr?.email}</div>
               </div>
-              <div style={{flex:1}}>
-                <div style={{fontSize:13,fontWeight:600,color:C.ink}}>Stage {st.n}: {st.role}</div>
-                <div style={{fontSize:11,color:C.muted,marginTop:2}}>{users[st.by]?.name}</div>
-                {st.at&&<div style={{fontSize:10,color:C.muted}}>{fmtDT(st.at)}</div>}
+              <div style={{marginLeft:"auto"}}>
+                {cr.status==="pending_manager"
+                  ?<span style={{fontSize:11,fontWeight:600,padding:"3px 10px",borderRadius:20,background:C.amberBg,color:C.amber}}>Pending</span>
+                  :cr.status==="rejected"
+                    ?<span style={{fontSize:11,fontWeight:600,padding:"3px 10px",borderRadius:20,background:C.redBg,color:C.red}}>Rejected</span>
+                    :<span style={{fontSize:11,fontWeight:600,padding:"3px 10px",borderRadius:20,background:C.greenBg,color:C.green}}>Approved ✓</span>}
               </div>
-              <span style={{fontSize:11,fontWeight:700,padding:"3px 10px",borderRadius:20,
-                background:st.status==="approved"?C.greenBg:st.status==="rejected"?C.redBg:"#fff",
-                color:st.status==="approved"?C.green:st.status==="rejected"?C.red:C.muted,
-                border:`1px solid ${st.status==="approved"?C.green+"30":st.status==="rejected"?C.red+"30":C.border}`}}>
-                {st.status==="approved"?"Approved":st.status==="rejected"?"Rejected":"Pending"}
-              </span>
+            </div>
+          </div>
+          {levels.map((l,i)=>(
+            <div key={i} style={{background:C.pageBg,borderRadius:8,padding:14}}>
+              <div style={{fontSize:12,fontWeight:700,color:C.ink,marginBottom:10}}>{l.name}</div>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                <div style={{fontSize:12,color:C.muted}}>{l.role_key?.replace(/_/g," ")}</div>
+                <span style={{fontSize:11,fontWeight:600,padding:"3px 10px",borderRadius:20,
+                  background:l.status==="approved"?C.greenBg:cr.current_stage===`pending_level_${l.level}`?C.amberBg:"#F8FAFC",
+                  color:l.status==="approved"?C.green:cr.current_stage===`pending_level_${l.level}`?C.amber:C.muted}}>
+                  {l.status==="approved"?`Approved ✓ — ${fmtD(l.approved_at)}`:cr.current_stage===`pending_level_${l.level}`?"Pending":"Awaiting"}
+                </span>
+              </div>
+              {l.note&&<div style={{fontSize:12,color:C.muted,marginTop:8,fontStyle:"italic"}}>"{l.note}"</div>}
             </div>
           ))}
         </div>
       )}
 
+      {/* History tab */}
       {tab==="history"&&(
-        <div style={{position:"relative",paddingLeft:22}}>
-          <div style={{position:"absolute",left:8,top:6,bottom:6,width:2,background:C.border}}/>
-          {cr.history.map((h,i)=>{
-            const m=CR_STATUS[h.s]||{color:C.muted,dot:"#CBD5E1"};
+        <div style={{position:"relative",paddingLeft:20}}>
+          <div style={{position:"absolute",left:7,top:6,bottom:6,width:2,background:C.border}}/>
+          {(cr.history||[]).map((h,i)=>{
+            const m=CR_STATUS[h.s]||{color:C.muted};
             return (
-              <div key={i} style={{position:"relative",marginBottom:16}}>
-                <div style={{position:"absolute",left:-18,width:10,height:10,borderRadius:"50%",
-                  background:m.dot,border:"2px solid #fff",top:3}}/>
-                <div style={{fontSize:12,fontWeight:700,color:m.color}}>{h.label||h.s}</div>
-                <div style={{fontSize:11,color:C.muted,marginTop:2}}>{fmtDT(h.at)} · {users[h.by]?.name||h.by}</div>
-                {h.note&&<div style={{marginTop:4,padding:"6px 10px",background:C.pageBg,borderRadius:5,fontSize:11,color:C.ink2,fontStyle:"italic"}}>"{h.note}"</div>}
+              <div key={i} style={{position:"relative",marginBottom:14}}>
+                <div style={{position:"absolute",left:-17,width:10,height:10,borderRadius:"50%",background:m.color||C.brand,border:"2px solid #fff",top:2}}/>
+                <div style={{fontSize:11,fontWeight:600,color:m.color||C.ink,textTransform:"capitalize"}}>{(h.label||h.s).replace(/_/g," ")}</div>
+                <div style={{fontSize:10,color:C.muted}}>{fmtDT(h.at)} · {users[h.by]?.name||"System"}</div>
+                {h.note&&<div style={{fontSize:11,color:C.ink2,marginTop:2,fontStyle:"italic"}}>"{h.note}"</div>}
               </div>
             );
           })}
         </div>
       )}
 
-      {tab==="attachments"&&(
-        <div>
-          {(!cr.attachments||cr.attachments.length===0)
-            ?<Empty icon="📎" title="No attachments" sub="Attachments added during submission appear here"/>
-            :<div style={{display:"flex",flexDirection:"column",gap:8}}>
-              {cr.attachments.map((a,i)=>(
-                <div key={i} style={{display:"flex",alignItems:"center",gap:12,padding:"11px 13px",
-                  background:C.pageBg,borderRadius:8,border:`1px solid ${C.border}`}}>
-                  <span style={{fontSize:22}}>{fileIcon(a.ext)}</span>
-                  <div style={{flex:1}}>
-                    <div style={{fontSize:13,fontWeight:600,color:C.ink}}>{a.name}</div>
-                    <div style={{fontSize:11,color:C.muted,marginTop:1}}>{a.size}</div>
-                  </div>
-                  <button onClick={()=>flash("Download started","success")} style={{...btn("ghost"),fontSize:11,padding:"5px 10px"}}>⬇ Download</button>
+      {/* Comments tab (reviewers) */}
+      {tab==="comments"&&(
+        <div style={{display:"flex",flexDirection:"column",gap:10}}>
+          {(cr.reviewer_comments||[]).length===0&&<div style={{color:C.muted,fontSize:13,padding:"20px 0",textAlign:"center"}}>No reviewer comments yet.</div>}
+          {(cr.reviewer_comments||[]).map((c,i)=>(
+            <div key={i} style={{background:C.pageBg,borderRadius:8,padding:"12px 14px"}}>
+              <div style={{display:"flex",justifyContent:"space-between",marginBottom:6}}>
+                <span style={{fontSize:12,fontWeight:700,color:C.ink}}>{users[c.by]?.name||"Reviewer"}</span>
+                <div style={{display:"flex",gap:8,alignItems:"center"}}>
+                  {c.concur!==undefined&&<span style={{fontSize:11,fontWeight:600,padding:"2px 8px",borderRadius:20,background:c.concur?C.greenBg:C.amberBg,color:c.concur?C.green:C.amber}}>{c.concur?"Concurred":"Noted"}</span>}
+                  <span style={{fontSize:10,color:C.muted}}>{fmtDT(c.at)}</span>
                 </div>
-              ))}
-            </div>}
-          {isMgr&&(
-            <div style={{marginTop:14,padding:"11px 14px",borderRadius:8,background:C.blueBg,
-              border:`1px solid ${C.blue}30`,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
-              <span style={{fontSize:12,color:C.blue,fontWeight:600}}>📧 Send reminder to all approvers and requester</span>
-              <button onClick={()=>flash("Reminder emails sent to all stakeholders")} style={{...btn("primary"),background:C.blue,fontSize:11,padding:"5px 12px"}}>Send Reminder</button>
+              </div>
+              <div style={{fontSize:13,color:C.ink,lineHeight:1.6}}>{c.comment}</div>
+            </div>
+          ))}
+          {/* Reviewer can add comment */}
+          {canReview&&(
+            <div style={{marginTop:8,border:`1px solid ${C.border}`,borderRadius:8,padding:14}}>
+              <label style={LBL}>Add Review Comment</label>
+              <textarea value={comment} onChange={e=>setComment(e.target.value)} placeholder="Your review comments or concurrence…" style={{...inp(),minHeight:70,resize:"vertical"}}/>
+              <div style={{display:"flex",gap:8,marginTop:10}}>
+                <button onClick={()=>doAction("reviewer_comment",{concur:false})} style={btn("ghost")}>Note Only</button>
+                <button onClick={()=>doAction("reviewer_comment",{concur:true})} style={{...btn("primary"),background:C.green}}>✓ Concur</button>
+              </div>
             </div>
           )}
         </div>
       )}
 
-      {tab==="comments"&&(
-        <div>
-          {(cr.comments||[]).length===0?<Empty icon="💬" title="No comments yet"/>
-          :(cr.comments||[]).map((c,i)=>(
-            <div key={i} style={{marginBottom:10,padding:"11px 13px",background:C.pageBg,borderRadius:8}}>
-              <div style={{display:"flex",gap:8,alignItems:"center",marginBottom:6}}>
-                <Av i={users[c.by]?.initials||"??"} s={24}/>
-                <span style={{fontSize:12,fontWeight:600,color:C.ink}}>{users[c.by]?.name}</span>
-                <span style={{fontSize:10,color:C.muted}}>{fmtDT(c.at)}</span>
-              </div>
-              <div style={{fontSize:12,color:C.ink2,lineHeight:1.5}}>{c.text}</div>
-            </div>
-          ))}
+      {/* Action note field */}
+      {(canMgrApprove||canL1Approve||canL2Approve||canStartImpl||canCompleteImpl)&&tab!=="comments"&&(
+        <div style={{marginTop:14}}>
+          <label style={LBL}>Note (optional)</label>
+          <textarea value={note} onChange={e=>setNote(e.target.value)} placeholder="Add a note for your decision…" style={{...inp(),minHeight:52,resize:"vertical"}}/>
         </div>
       )}
 
-      {/* Approval comment */}
-      {(canL1||canL2||canRev)&&(
-        <div style={{marginTop:16}}>
-          <label style={LBL}>Approval Comment (optional)</label>
-          <textarea value={note} onChange={e=>setNote(e.target.value)} style={{...inp(),minHeight:56,resize:"vertical"}} placeholder="Add a note to this decision…"/>
-        </div>
-      )}
-      {canPR&&(
-        <div style={{marginTop:16,display:"flex",flexDirection:"column",gap:10}}>
-          <div><label style={LBL}>Review Outcome</label>
+      {/* Implementation feedback */}
+      {canCompleteImpl&&(
+        <div style={{marginTop:10,display:"flex",flexDirection:"column",gap:10}}>
+          <div>
+            <label style={LBL}>Implementation Notes</label>
+            <textarea value={implNotes} onChange={e=>setImplNotes(e.target.value)} placeholder="Document what was done, any issues encountered…" style={{...inp(),minHeight:80,resize:"vertical"}}/>
+          </div>
+          <div>
+            <label style={LBL}>Outcome</label>
             <div style={{display:"flex",gap:10}}>
               {["successful","failed"].map(o=>(
-                <button key={o} onClick={()=>setOut(o)} style={{flex:1,padding:10,fontFamily:"inherit",
-                  border:`1.5px solid ${out===o?(o==="successful"?C.green:C.red):C.border}`,borderRadius:7,
-                  background:out===o?(o==="successful"?C.greenBg:C.redBg):"#fff",
-                  cursor:"pointer",fontSize:12,fontWeight:600,
-                  color:out===o?(o==="successful"?C.green:C.red):C.muted}}>
-                  {o==="successful"?"✓ Successful":"✕ Failed"}
+                <button key={o} onClick={()=>setOutcome(o)} style={{flex:1,padding:"10px",border:`1.5px solid ${outcome===o?(o==="successful"?C.green:C.red):C.border}`,borderRadius:8,background:outcome===o?(o==="successful"?C.greenBg:C.redBg):"#fff",cursor:"pointer",fontFamily:"inherit",fontSize:12,fontWeight:700,color:outcome===o?(o==="successful"?C.green:C.red):C.muted,textTransform:"capitalize"}}>
+                  {o==="successful"?"✅ Successful":"❌ Failed"}
                 </button>
               ))}
             </div>
           </div>
-          <div><label style={LBL}>Lessons Learned</label>
-            <textarea value={les} onChange={e=>setLes(e.target.value)} style={{...inp(),minHeight:60,resize:"vertical"}} placeholder="What could be improved next time?"/>
-          </div>
         </div>
       )}
 
-      {/* Actions */}
-      <div style={{display:"flex",justifyContent:"flex-end",gap:8,marginTop:18,paddingTop:16,borderTop:`1px solid ${C.border}`,flexWrap:"wrap"}}>
-        {canL1&&<><button onClick={()=>{transCR(cr.id,"rejected",note);onClose()}} style={btn("ghost")}>Reject</button><button onClick={()=>{transCR(cr.id,cr.isEmergency?"scheduled":"pending_secondary",note||"L1 approved");onClose()}} style={btn("success")}>✓ {cr.isEmergency?"Emergency Approve":"L1 Approve"}</button></>}
-        {canL2&&<><button onClick={()=>{transCR(cr.id,"rejected",note);onClose()}} style={btn("ghost")}>Reject</button><button onClick={()=>{transCR(cr.id,"change_review",note||"L2 approved");onClose()}} style={btn("success")}>✓ L2 Approve</button></>}
-        {canRev&&<><button onClick={()=>{transCR(cr.id,"pending_line_manager",note||"Sent back");onClose()}} style={btn("ghost")}>↩ Send Back</button><button onClick={()=>{transCR(cr.id,"scheduled",note||"Approved for scheduling");onClose()}} style={btn("violet")}>📅 Schedule</button></>}
-        {canSt &&<button onClick={()=>{transCR(cr.id,"in_progress","Deployment started");onClose()}} style={btn("primary")}>▶ Start</button>}
-        {canCmp&&<button onClick={()=>{transCR(cr.id,"completed","Completed",{implementationNotes:impl,completedAt:new Date().toISOString()});onClose()}} style={btn("success")}>✓ Complete</button>}
-        {canPR&&out&&<button onClick={()=>{transCR(cr.id,"post_review","Post-review submitted",{reviewOutcome:out,lessonsLearned:les});onClose()}} style={btn("violet")}>Submit Review</button>}
-        {canCls&&<button onClick={()=>{transCR(cr.id,"closed",note||"Closed");onClose()}} style={btn("success")}>🔒 Close CR</button>}
+      {/* Action buttons */}
+      <div style={{display:"flex",justifyContent:"flex-end",gap:8,marginTop:18,paddingTop:14,borderTop:`1px solid ${C.border}`}}>
         <button onClick={onClose} style={btn("ghost")}>Close</button>
+        {canMgrApprove&&<>
+          <button onClick={()=>doAction("reject")} disabled={saving} style={btn("danger")}>Reject</button>
+          <button onClick={()=>doAction("approve_manager")} disabled={saving} style={btn("primary")}>✓ Approve & Forward →</button>
+        </>}
+        {canL1Approve&&<>
+          <button onClick={()=>doAction("reject")} disabled={saving} style={btn("danger")}>Reject</button>
+          <button onClick={()=>doAction("approve_level")} disabled={saving} style={btn("primary")}>✓ Approve Level 1 →</button>
+        </>}
+        {canL2Approve&&<>
+          <button onClick={()=>doAction("reject")} disabled={saving} style={btn("danger")}>Reject</button>
+          <button onClick={()=>doAction("approve_level")} disabled={saving} style={btn("primary")}>✓ Approve Level 2 →</button>
+        </>}
+        {canStartImpl&&<button onClick={()=>doAction("start_implementation")} disabled={saving} style={{...btn("primary"),background:C.blue}}>🔧 Start Implementation</button>}
+        {canCompleteImpl&&<button onClick={()=>doAction("complete_implementation",{implementationNotes:implNotes,outcome})} disabled={saving} style={{...btn("primary"),background:outcome==="failed"?C.red:C.green}}>
+          {outcome==="failed"?"❌ Mark Failed":"✅ Mark Complete"}
+        </button>}
       </div>
     </Modal>
-  );
-}
-
-// ══════════════════════════════════════════════════════════════
-// CALENDAR
-// ══════════════════════════════════════════════════════════════
-function CalendarPage({ctx}){
-  const {crs}=ctx;
-  const [detail,setDetail]=useState(null);
-  const [risk,setRisk]=useState("all");
-  const relevant=crs.filter(c=>["scheduled","in_progress","completed"].includes(c.status)&&(risk==="all"||c.risk_level===risk));
-  const byDate=useMemo(()=>{
-    const m={};relevant.forEach(c=>{if(!m[c.deploy_date])m[c.deploy_date]=[];m[c.deploy_date].push(c);});
-    return Object.entries(m).sort(([a],[b])=>a.localeCompare(b));
-  },[relevant]);
-  const rc=r=>r==="High"?C.red:r==="Medium"?C.amber:C.green;
-  return (
-    <div>
-      <PageTitle title="Change Calendar" sub="Scheduled deployments and maintenance windows"/>
-      <div style={{display:"flex",gap:8,marginBottom:16}}>
-        {["all","High","Medium","Low"].map(r=>(
-          <button key={r} onClick={()=>setRisk(r)} style={{padding:"5px 13px",borderRadius:20,cursor:"pointer",fontFamily:"inherit",
-            border:`1.5px solid ${risk===r?(r==="all"?C.brand:rc(r)):C.border}`,
-            background:risk===r?(r==="all"?C.brandLt:rc(r)+"14"):"transparent",
-            color:risk===r?(r==="all"?C.brand:rc(r)):C.muted,
-            fontSize:11,fontWeight:600}}>
-            {r==="all"?"All Risk":r}
-          </button>
-        ))}
-      </div>
-      {byDate.length===0?<div style={{...card(40),textAlign:"center",color:C.muted}}>No scheduled changes found</div>
-      :byDate.map(([date,items])=>(
-        <div key={date} style={{marginBottom:20}}>
-          <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:8,fontSize:12,fontWeight:700,color:C.muted}}>
-            <div style={{flex:1,height:1,background:C.border}}/>
-            📅 {fmtD(date+"T12:00:00")}
-            <div style={{flex:1,height:1,background:C.border}}/>
-          </div>
-          {items.map(c=>(
-            <div key={c.id} onClick={()=>setDetail(c)} style={{...card(14),marginBottom:8,cursor:"pointer",borderLeft:`3px solid ${c.is_emergency?C.red:rc(c.risk_level)}`}}>
-              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
-                <div style={{flex:1,minWidth:0}}>
-                  <div style={{fontSize:13,fontWeight:700,color:C.ink,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>
-                    {c.is_emergency&&<span style={{color:C.red,marginRight:4}}>⚡</span>}{c.title}
-                  </div>
-                  <div style={{display:"flex",gap:10,marginTop:4,fontSize:11,color:C.muted,flexWrap:"wrap"}}>
-                    <span>{c.id}</span><span>·</span><span>{c.system_name}</span><span>·</span><span>{c.deploy_start}–{c.deploy_end}</span>
-                  </div>
-                </div>
-                <div style={{display:"flex",gap:8,flexShrink:0,marginLeft:12}}>
-                  <CRChip s={c.status}/>
-                  <EnvTag e={c.environment}/>
-                </div>
-              </div>
-            </div>
-          ))}
-        </div>
-      ))}
-      {detail&&<CRDetail cr={detail} onClose={()=>setDetail(null)} ctx={ctx}/>}
-    </div>
   );
 }
 

@@ -187,6 +187,27 @@ const templates = {
     `))
   }),
 
+
+  // ── CR STAGE NOTIFICATION (level-based) ──────────────────
+  cr_stage_notification: (d) => ({
+    subject: `${d.cr_id} - ${d.title} - ${d.stage}`,
+    html: wrap(hdr(B, "Change Request Update", d.stage) + body(`
+      ${p(`You have received a Change Request notification requiring your attention.`)}
+      ${table(
+        row("Change Code", d.cr_id) +
+        row("Title", d.title) +
+        row("Current Stage", d.stage) +
+        row("Action Required", d.action||"Please review and take action.")
+      )}
+      ${d.note ? hl(`<strong>Note:</strong> "${d.note}"`, AMB, ABG) : ""}
+      <p style="font-family:Arial,sans-serif;font-size:13px;color:${MUT};margin:16px 0;line-height:1.6">
+        If you are unable to access the link below, please contact your system administrator.
+      </p>
+      ${cta(d.app_url || "https://facilflowuser.vercel.app", "View Change Request →", B)}
+      ${d.participants&&d.participants.length>0?`<p style="font-family:Arial,sans-serif;font-size:11px;color:${MUT};margin-top:16px">This notification was also sent to: ${d.participants.join(", ")}</p>`:""}
+    `))
+  }),
+
   cr_reminder: (d) => ({
     subject: `Reminder: ${d.cr_id} is awaiting your approval — FaciliFlow`,
     html: wrap(hdr(AMB, "Approval Reminder", "A change request is waiting for your review") + body(`

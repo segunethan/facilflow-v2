@@ -136,3 +136,81 @@ export const uploadAttachment = async (crId, file) => {
   const { data: { publicUrl } } = supabase.storage.from('cr-attachments').getPublicUrl(path)
   return { path, publicUrl, name: file.name, size: file.size }
 }
+
+// ── CHANGE MANAGEMENT ──────────────────────────────────────
+
+export const fetchChangeRoles = async () => {
+  const { data, error } = await supabase.from('change_roles').select('*').order('key')
+  if (error) throw error
+  return data
+}
+
+export const fetchUserChangeRoles = async (tenantId) => {
+  const { data, error } = await supabase
+    .from('user_change_roles')
+    .select('*, users(id,name,email,initials)')
+    .eq('tenant_id', tenantId)
+  if (error) throw error
+  return data
+}
+
+export const assignChangeRole = async (userId, roleKey, tenantId) => {
+  const { data, error } = await supabase
+    .from('user_change_roles')
+    .insert([{ user_id: userId, role_key: roleKey, tenant_id: tenantId }])
+    .select().single()
+  if (error) throw error
+  return data
+}
+
+export const removeChangeRole = async (userId, roleKey) => {
+  const { error } = await supabase
+    .from('user_change_roles')
+    .delete()
+    .eq('user_id', userId)
+    .eq('role_key', roleKey)
+  if (error) throw error
+}
+
+export const fetchApprovalLevels = async (tenantId) => {
+  const { data, error } = await supabase
+    .from('change_approval_levels')
+    .select('*')
+    .eq('tenant_id', tenantId)
+    .order('level_order')
+  if (error) throw error
+  return data
+}
+
+export const saveApprovalLevel = async (level) => {
+  const { data, error } = await supabase
+    .from('change_approval_levels')
+    .upsert([level])
+    .select().single()
+  if (error) throw error
+  return data
+}
+
+export const deleteApprovalLevel = async (id) => {
+  const { error } = await supabase.from('change_approval_levels').delete().eq('id', id)
+  if (error) throw error
+}
+
+export const fetchTenantConfig = async (tenantId) => {
+  const { data, error } = await supabase
+    .from('change_tenant_config')
+    .select('*, users(id,name,email,initials)')
+    .eq('tenant_id', tenantId)
+    .single()
+  if (error && error.code !== 'PGRST116') throw error
+  return data
+}
+
+export const saveTenantConfig = async (tenantId, updates) => {
+  const { data, error } = await supabase
+    .from('change_tenant_config')
+    .upsert([{ tenant_id: tenantId, ...updates, updated_at: new Date().toISOString() }])
+    .select().single()
+  if (error) throw error
+  return data
+}
