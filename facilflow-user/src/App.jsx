@@ -662,7 +662,9 @@ function Dashboard({ctx,setPage}){
 // MY REQUESTS
 // ══════════════════════════════════════════════════════════════
 function MyRequests({ctx}){
-  const {uid,reqs,submitReq,transReq,users,invItems,vehicles,drivers}=ctx;
+  const {uid,reqs,submitReq,transReq,users,invItems}=ctx;
+  const vehicles = Array.isArray(ctx.vehicles) ? ctx.vehicles : (ctx.vehicles?.data || []);
+  const drivers  = Array.isArray(ctx.drivers)  ? ctx.drivers  : (ctx.drivers?.data  || []);
   const [modal,    setModal]   = useState(null);
   const [detail,   setDetail]  = useState(null);
   const [search,   setSearch]  = useState("");
@@ -950,15 +952,18 @@ function StatForm({onClose,onSubmit,invItems=[]}){
 }
 
 function ReqDetail({req,onClose,ctx}){
-  const {uid,transReq,me,invItems,users,vehicles=[],drivers=[]}=ctx;
+  const {uid,transReq,me,invItems,users}=ctx;
+  // vehicles and drivers may be array or object — normalize safely
+  const vehList = Array.isArray(ctx.vehicles) ? ctx.vehicles : (ctx.vehicles?.data || []);
+  const drvList = Array.isArray(ctx.drivers)  ? ctx.drivers  : (ctx.drivers?.data  || []);
   const [note,setNote]=useState("");
   const [tab,setTab]=useState("details");
   const canApprove  = me.role==="manager"       && req.status==="pending_approval";
   const canProcess  = me.role==="resource_team" && req.status==="approved";
   const canComplete = me.role==="resource_team" && req.status==="in_progress";
 
-  const assignedVeh = req.assigned_vehicle ? (vehicles||[]).find(v=>v.id===req.assigned_vehicle) : null;
-  const assignedDrv = req.assigned_driver  ? (drivers||[]).find(d=>d.id===req.assigned_driver)  : null;
+  const assignedVeh = req.assigned_vehicle ? vehList.find(v=>v.id===req.assigned_vehicle) : null;
+  const assignedDrv = req.assigned_driver  ? drvList.find(d=>d.id===req.assigned_driver)  : null;
 
   const renderDetails = () => {
     if(req.type==="pool_car"){
