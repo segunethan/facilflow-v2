@@ -129,6 +129,27 @@ export const fetchInventory = async (tenantId) => {
   return data
 }
 
+
+// Vehicles (read-only for users - to show assigned vehicle details)
+export const fetchVehicles = async (tenantId) => {
+  const { data, error } = await supabase
+    .from('vehicles')
+    .select('*')
+    .eq('tenant_id', tenantId)
+  if (error) throw error
+  return data
+}
+
+// Drivers (read-only for users - to show assigned driver details)
+export const fetchDrivers = async (tenantId) => {
+  const { data, error } = await supabase
+    .from('drivers')
+    .select('*')
+    .eq('tenant_id', tenantId)
+  if (error) throw error
+  return data
+}
+
 // Realtime subscription helper
 export const subscribeToTable = (table, tenantId, callback) => {
   return supabase
