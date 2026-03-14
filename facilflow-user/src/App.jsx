@@ -433,26 +433,30 @@ export default function UserApp({ currentUser }){
       setCrs(p=>[normCR(saved),...p]);
       flash(`${id} submitted to Change Manager`);
 
-      // Notify change manager
+      // Notify change manager — fetch email directly if not in users map
       if(managerId){
-        const mgr = users[managerId];
-        if(mgr?.email){
-          try {
+        try {
+          let mgrEmail = users[managerId]?.email;
+          if(!mgrEmail){
+            // Fallback: fetch directly from DB
+            const {data:mgrRow} = await supabase.from("users").select("email,name").eq("id",managerId).single();
+            mgrEmail = mgrRow?.email;
+          }
+          if(mgrEmail){
             await supabase.functions.invoke("send-email",{body:{
               template:"cr_stage_notification",
-              to: mgr.email,
+              to: mgrEmail,
               data:{
-                cr_id:    id,
-                title:    data.title,
-                stage:    "Change Manager Review",
-                subject:  `${id} - ${data.title} - Change Manager Review`,
-                action:   "A new change request requires your review and approval.",
-                app_url:  "https://facilflowuser.vercel.app",
-                participants:[]
+                cr_id:   id,
+                title:   data.title,
+                stage:   "Change Manager Review",
+                subject: `${id} - ${data.title} - Change Manager Review`,
+                action:  "A new change request has been submitted and requires your review and approval.",
+                app_url: "https://facilflowuser.vercel.app",
               }
             }});
-          } catch(ne){ console.warn("Email notification failed:", ne.message); }
-        }
+          }
+        } catch(ne){ console.warn("CR submission email failed:", ne.message); }
       }
 
     } catch(e){ flash(e.message,"error"); }
@@ -544,57 +548,81 @@ export default function UserApp({ currentUser }){
       setCrs(p=>p.map(c=>c.id===id?normCR(saved):c));
       flash(`CR updated: ${nextStatus.replace(/_/g," ")}`);
 
-      // Send stage notification emails
-      try { await sendCRStageNotification(saved, action, note, users, cr); }
-      catch(ne){ console.warn("Stage notification failed:", ne.message); }
+      // Send stage notification emails — level-based, backward notification
+      try {
+        const emailRecipients = []; // accumulate: [current stage] + [all previous]
+        const appUrl = "https://facilflowuser.vercel.app";
+
+        // Always include technician (backward visibility)
+        const tech = users[saved.initiator];
+        if(tech?.email) emailRecipients.push({email:tech.email, role:"Technician"});
+
+        // Always include change manager (backward visibility once approved)
+        const mgr = users[saved.change_manager_id];
+        if(mgr?.email && action!=="approve_manager" && action!=="reject") {
+          emailRecipients.push({email:mgr.email, role:"Change Manager"});
+        }
+
+        let stageLabel = "";
+        let currentEmail = null;
+
+        if(action==="approve_manager"){
+          // Manager approved → notify L1 approver (or implementer if no levels)
+          stageLabel = `Level ${saved.current_level||1} Approval`;
+          const nextLevel = (saved.level_approvals||[])[0];
+          if(nextLevel?.role_key){
+            const approvers = (crUsers||{})[nextLevel.role_key]||[];
+            approvers.forEach(a=>{ if(a?.email) emailRecipients.push({email:a.email,role:stageLabel}); });
+          }
+          if((saved.level_approvals||[]).length===0){
+            stageLabel="Implementation";
+            const impls=(crUsers||{})["change_implementer"]||[];
+            impls.forEach(a=>{ if(a?.email) emailRecipients.push({email:a.email,role:"Implementer"}); });
+          }
+        } else if(action==="approve_level"){
+          const nextLevelObj=(saved.level_approvals||[]).find(l=>l.level===saved.current_level);
+          if(nextLevelObj){
+            stageLabel=nextLevelObj.name;
+            const approvers=(crUsers||{})[nextLevelObj.role_key]||[];
+            approvers.forEach(a=>{ if(a?.email) emailRecipients.push({email:a.email,role:stageLabel}); });
+          } else {
+            stageLabel="Implementation";
+            const impls=(crUsers||{})["change_implementer"]||[];
+            impls.forEach(a=>{ if(a?.email) emailRecipients.push({email:a.email,role:"Implementer"}); });
+          }
+        } else if(action==="reject"){
+          stageLabel="Rejected";
+          // Only notify technician (already added above)
+          if(mgr?.email) emailRecipients.push({email:mgr.email,role:"Change Manager"});
+        } else if(action==="start_implementation"){
+          stageLabel="Implementation Started";
+        } else if(action==="complete_implementation"){
+          stageLabel=saved.implementation_outcome==="failed"?"Implementation Failed":"Implementation Completed";
+        }
+
+        // Deduplicate and send
+        const uniqueEmails=[...new Set(emailRecipients.map(r=>r.email))].filter(Boolean);
+        if(uniqueEmails.length>0 && stageLabel){
+          await supabase.functions.invoke("send-email",{body:{
+            template:"cr_stage_notification",
+            to: uniqueEmails,
+            data:{
+              cr_id:   saved.id,
+              title:   saved.title,
+              stage:   stageLabel,
+              subject: `${saved.id} - ${saved.title} - ${stageLabel}`,
+              action:  action==="reject"
+                ? "This change request has been rejected. Please review and raise a new CR if needed."
+                : `The change request has progressed to: ${stageLabel}. Please review and take action if required.`,
+              note:    note||"",
+              app_url: appUrl,
+            }
+          }});
+        }
+      } catch(ne){ console.warn("Stage notification failed:", ne.message); }
 
     } catch(e){ flash(e.message,"error"); }
-  },[crs, uid, flash, users]);
-
-  // Helper: send level-based notifications
-  const sendCRStageNotification = async (cr, action, note, usersMap, prevCR) => {
-    const participants = [];
-    // Always include technician
-    const tech = usersMap[cr.initiator];
-    if(tech?.email) participants.push({email:tech.email, role:"Technician"});
-    // Include change manager
-    const mgr = usersMap[cr.change_manager_id];
-    if(mgr?.email) participants.push({email:mgr.email, role:"Change Manager"});
-
-    let currentStageLabel = "";
-    let currentStageRecipient = null;
-
-    if(action === "approve_manager"){
-      const nextLevel = (cr.level_approvals||[])[0];
-      currentStageLabel = nextLevel?.name || "Implementation";
-      // Find users with the next level role and notify them
-    } else if(action === "approve_level"){
-      const nextLevelObj = (cr.level_approvals||[]).find(l=>l.level===cr.current_level);
-      currentStageLabel = nextLevelObj?.name || cr.current_stage;
-    } else if(action === "reject"){
-      currentStageLabel = "Rejected";
-    } else if(action === "complete_implementation"){
-      currentStageLabel = "Completed";
-    }
-
-    // Send to current stage recipient + all previous participants (backward notification)
-    const emailList = [...new Set(participants.map(p=>p.email))];
-    if(emailList.length > 0){
-      await supabase.functions.invoke("send-email",{body:{
-        template:"cr_stage_notification",
-        to: emailList,
-        data:{
-          cr_id:    cr.id,
-          title:    cr.title,
-          stage:    currentStageLabel,
-          subject:  `${cr.id} - ${cr.title} - ${currentStageLabel}`,
-          action:   `The change request has moved to: ${currentStageLabel}`,
-          note:     note||"",
-          app_url:  "https://facilflowuser.vercel.app",
-        }
-      }});
-    }
-  };
+  },[crs, uid, flash, users, crUsers]);
 
   const transCR = useCallback(async (id,ns,note="",extra={})=>{
     // Legacy wrapper — use advanceCR for new workflow
@@ -1389,112 +1417,322 @@ function Queue({ctx}){
 // CHANGE REQUESTS PAGE
 // ══════════════════════════════════════════════════════════════
 function ChangePage({ctx}){
-  const {crs,submitCR,advanceCR,users,myChangeRoles,crUsers,uid,me}=ctx;
-  const [form,   setForm]   = useState(false);
-  const [detail, setDetail] = useState(null);
-  const [tab,    setTab]    = useState("mine");
+  const {crs,submitCR,advanceCR,users,myChangeRoles,uid}=ctx;
+  const [form,    setForm]    = useState(false);
+  const [detail,  setDetail]  = useState(null);
+  const [search,  setSearch]  = useState("");
+  const [fStatus, setFStatus] = useState("");
+  const [fType,   setFType]   = useState("");
+  const [fEnv,    setFEnv]    = useState("");
+  const [fRisk,   setFRisk]   = useState("");
+  const [fUser,   setFUser]   = useState("");
+  const [fFrom,   setFFrom]   = useState("");
+  const [fTo,     setFTo]     = useState("");
+  const [fOutcome,setFOutcome]= useState("");
+  const [page,    setPage]    = useState(1);
+  const [activeCard, setActiveCard] = useState("");
+  const PAGE_SIZE = 15;
 
-  const isTech  = myChangeRoles.includes("change_technician");
-  const isMgr   = myChangeRoles.includes("change_manager");
-  const isImpl  = myChangeRoles.includes("change_implementer");
-  const isRevwr = myChangeRoles.includes("change_reviewer");
-  const isApprL1= myChangeRoles.includes("change_approver_l1");
-  const isApprL2= myChangeRoles.includes("change_approver_l2");
+  const isTech   = (myChangeRoles||[]).includes("change_technician");
+  const isMgr    = (myChangeRoles||[]).includes("change_manager");
+  const isApprL1 = (myChangeRoles||[]).includes("change_approver_l1");
+  const isApprL2 = (myChangeRoles||[]).includes("change_approver_l2");
+  const isImpl   = (myChangeRoles||[]).includes("change_implementer");
+  const isRevwr  = (myChangeRoles||[]).includes("change_reviewer");
 
-  const mine      = crs.filter(c=>c.initiator===uid);
-  const pendingMgr= crs.filter(c=>c.status==="pending_manager" && c.change_manager_id===uid);
-  const pendingL1 = crs.filter(c=>c.current_stage==="pending_level_1" && isApprL1);
-  const pendingL2 = crs.filter(c=>c.current_stage==="pending_level_2" && isApprL2);
-  const forReview = crs.filter(c=>(c.reviewer_ids||[]).includes(uid) && c.status==="pending_manager");
-  const forImpl   = crs.filter(c=>c.status==="pending_implementation" && isImpl);
+  // Scope: technicians see only their own + involved; others see all
+  const scopedCRs = useMemo(()=>{
+    if(isMgr||isApprL1||isApprL2||isImpl) return crs||[];
+    return (crs||[]).filter(c=>
+      c.initiator===uid ||
+      (c.reviewer_ids||[]).includes(uid) ||
+      c.change_manager_id===uid
+    );
+  },[crs,uid,isMgr,isApprL1,isApprL2,isImpl]);
 
-  const TABS = [
-    {k:"mine",     label:"My Changes",           count:mine.length,      show:isTech},
-    {k:"approve",  label:"Pending My Approval",  count:pendingMgr.length+pendingL1.length+pendingL2.length, show:isMgr||isApprL1||isApprL2},
-    {k:"review",   label:"For Review",           count:forReview.length, show:isRevwr},
-    {k:"implement",label:"Implementation",       count:forImpl.length,   show:isImpl},
-    {k:"all",      label:"All Changes",          count:crs.length,       show:true},
-  ].filter(t=>t.show);
+  // ── METRICS (on scoped, unfiltered dataset) ─────────────
+  const total       = scopedCRs.length;
+  const pending     = scopedCRs.filter(c=>["pending_manager","pending_approval"].includes(c.status)).length;
+  const inImpl      = scopedCRs.filter(c=>["pending_implementation","in_progress"].includes(c.status)).length;
+  const completed   = scopedCRs.filter(c=>["completed","closed"].includes(c.status)).length;
 
-  const activeTab = TABS.find(t=>t.k===tab) ? tab : TABS[0]?.k;
+  // Avg TAT: days from created_at to last approval or completion
+  const tatDays = useMemo(()=>{
+    const done = scopedCRs.filter(c=>c.status==="completed"&&c.created_at&&c.implementation_completed_at);
+    if(!done.length) return null;
+    const avg = done.reduce((sum,c)=>{
+      const diff = new Date(c.implementation_completed_at)-new Date(c.created_at);
+      return sum + diff/(1000*60*60*24);
+    },0)/done.length;
+    return avg.toFixed(1);
+  },[scopedCRs]);
 
-  const getShown = () => {
-    switch(activeTab){
-      case "mine":      return mine;
-      case "approve":   return [...pendingMgr,...pendingL1,...pendingL2];
-      case "review":    return forReview;
-      case "implement": return forImpl;
-      default:          return crs;
-    }
+  // ── FILTER LOGIC ─────────────────────────────────────────
+  const filtered = useMemo(()=>{
+    const q = search.toLowerCase();
+    return scopedCRs.filter(c=>{
+      const raiser = users[c.initiator];
+      const ct = c.change_type||c.changeType||"";
+      const rl = c.risk_level||c.riskLevel||"";
+      const st = c.status||"";
+      const outcome = c.implementation_outcome||"";
+
+      if(fStatus){
+        const statusGroups = {
+          pending_manager: ["pending_manager"],
+          pending_approval:["pending_approval"],
+          implementation:  ["pending_implementation","in_progress"],
+          completed:       ["completed","closed"],
+          rejected:        ["rejected"],
+        };
+        const group = statusGroups[fStatus]||[fStatus];
+        if(!group.includes(st)) return false;
+      }
+      if(activeCard==="pending"  && !["pending_manager","pending_approval"].includes(st)) return false;
+      if(activeCard==="impl"     && !["pending_implementation","in_progress"].includes(st)) return false;
+      if(activeCard==="done"     && !["completed","closed"].includes(st)) return false;
+      if(activeCard==="rejected" && st!=="rejected") return false;
+
+      if(fType    && ct!==fType)   return false;
+      if(fEnv     && c.environment!==fEnv) return false;
+      if(fRisk    && rl!==fRisk)   return false;
+      if(fUser    && c.initiator!==fUser) return false;
+      if(fOutcome && outcome!==fOutcome) return false;
+      if(fFrom && new Date(c.created_at)<new Date(fFrom)) return false;
+      if(fTo   && new Date(c.created_at)>new Date(fTo+"T23:59:59")) return false;
+      if(q){
+        const hay=[c.id,c.title||"",c.description||"",raiser?.name||"",c.system_name||""].join(" ").toLowerCase();
+        if(!hay.includes(q)) return false;
+      }
+      return true;
+    });
+  },[scopedCRs,search,fStatus,fType,fEnv,fRisk,fUser,fOutcome,fFrom,fTo,activeCard,users]);
+
+  const totalPages = Math.max(1,Math.ceil(filtered.length/PAGE_SIZE));
+  const paged = filtered.slice((page-1)*PAGE_SIZE, page*PAGE_SIZE);
+
+  const resetPage = fn => (...args) => { fn(...args); setPage(1); };
+  const hasFilters = search||fStatus||fType||fEnv||fRisk||fUser||fOutcome||fFrom||fTo||activeCard;
+
+  const clearAll = ()=>{
+    setSearch(""); setFStatus(""); setFType(""); setFEnv(""); setFRisk("");
+    setFUser(""); setFOutcome(""); setFFrom(""); setFTo(""); setActiveCard(""); setPage(1);
   };
-  const shown = getShown();
 
-  const stageLabel = c => {
-    if(c.status==="pending_manager")     return "⏳ Awaiting Manager";
-    if(c.status==="pending_approval")    return `⏳ Level ${c.current_level} Review`;
-    if(c.status==="pending_implementation") return "🔧 Ready to Implement";
-    if(c.status==="in_progress")         return "🔄 In Progress";
-    if(c.status==="completed")           return "✅ Completed";
-    if(c.status==="closed")              return "🔒 Closed";
-    if(c.status==="rejected")            return "❌ Rejected";
-    return c.status.replace(/_/g," ");
+  const stageLabel = c=>{
+    if(c.status==="pending_manager")        return {label:"Awaiting Manager",    color:C.amber};
+    if(c.status==="pending_approval")       return {label:`Level ${c.current_level||1} Approval`, color:C.violet};
+    if(c.status==="pending_implementation") return {label:"Ready to Implement",  color:C.blue};
+    if(c.status==="in_progress")            return {label:"Implementing",         color:C.teal};
+    if(c.status==="completed")              return {label:"Completed",            color:C.green};
+    if(c.status==="closed")                 return {label:"Closed",               color:C.muted};
+    if(c.status==="rejected")               return {label:"Rejected",             color:C.red};
+    return {label:c.status.replace(/_/g," "), color:C.muted};
+  };
+
+  const uniqueUsers = Object.values(users||{}).filter(Boolean);
+
+  // CSV export
+  const exportCSV = ()=>{
+    const headers = ["CR ID","Title","Type","Environment","Risk","Raised By","Date Raised","Last Updated","Status","Outcome"];
+    const rows = filtered.map(c=>{
+      const raiser = users[c.initiator];
+      return [c.id, c.title||"", c.change_type||c.changeType||"", c.environment||"",
+        c.risk_level||c.riskLevel||"", raiser?.name||"",
+        c.created_at?new Date(c.created_at).toLocaleDateString("en-GB"):"",
+        c.updated_at?new Date(c.updated_at).toLocaleDateString("en-GB"):"",
+        c.status.replace(/_/g," "), c.implementation_outcome||""];
+    });
+    const csv=[headers,...rows].map(r=>r.map(v=>`"${v}"`).join(",")).join("\n");
+    const blob=new Blob([csv],{type:"text/csv"});
+    const url=URL.createObjectURL(blob);
+    const a=document.createElement("a");
+    a.href=url; a.download=`change-requests-${new Date().toISOString().slice(0,10)}.csv`;
+    a.click(); URL.revokeObjectURL(url);
   };
 
   return (
-    <div style={{display:"flex",flexDirection:"column",gap:16}}>
-      <PageTitle title="Change Requests" sub="Enterprise change management"
+    <div style={{display:"flex",flexDirection:"column",gap:18}}>
+      <PageTitle title="Change Requests" sub="Enterprise change management and governance"
         action={isTech&&<button onClick={()=>setForm(true)} style={btn("primary")}>+ Raise Change Request</button>}/>
 
-      {/* Role tabs */}
-      <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
-        {TABS.map(t=>{
-          const active = activeTab===t.k;
+      {/* ── 5 METRIC CARDS ── */}
+      <div style={{display:"grid",gridTemplateColumns:"repeat(5,1fr)",gap:12}}>
+        {[
+          {key:"",         label:"Total Changes",       value:total,    sub:"All in scope",              color:C.blue},
+          {key:"pending",  label:"Pending Approvals",   value:pending,  sub:"Awaiting sign-off",         color:C.amber},
+          {key:"tat",      label:"Avg TAT (days)",      value:tatDays??"-", sub:"Submission to close",   color:C.violet},
+          {key:"impl",     label:"In Implementation",   value:inImpl,   sub:"Being executed",            color:C.teal},
+          {key:"done",     label:"Completed",           value:completed,sub:"Successfully closed",       color:C.green},
+        ].map(({key,label,value,sub,color})=>{
+          const active = activeCard===key && key!=="tat";
           return (
-            <button key={t.k} onClick={()=>setTab(t.k)} style={{
-              padding:"6px 14px",borderRadius:20,
-              border:`1.5px solid ${active?C.brand:C.border}`,
-              background:active?C.brandLt:"#fff",
-              color:active?C.brand:C.muted,
-              fontSize:12,fontWeight:active?700:500,
-              cursor:"pointer",fontFamily:"inherit",
-              display:"flex",alignItems:"center",gap:6,
-            }}>
-              {t.label}
-              <span style={{background:active?C.brand:C.surface,color:active?"#fff":C.muted,fontSize:10,fontWeight:700,padding:"1px 6px",borderRadius:10}}>{t.count}</span>
-            </button>
+            <div key={label} onClick={()=>{ if(key==="tat") return; resetPage(setActiveCard)(active?"":key); }}
+              style={{background:"#fff",border:`1.5px solid ${active?color:C.border}`,borderRadius:10,padding:"14px 16px",
+                cursor:key==="tat"?"default":"pointer",
+                boxShadow:active?`0 0 0 3px ${color}18`:"none",transition:"all .15s"}}>
+              <div style={{fontSize:26,fontWeight:800,color:active?color:C.ink,letterSpacing:"-.03em",lineHeight:1}}>{value}</div>
+              <div style={{fontSize:12,fontWeight:700,color:active?color:C.ink,marginTop:6}}>{label}</div>
+              <div style={{fontSize:11,color:C.muted,marginTop:2}}>{sub}</div>
+            </div>
           );
         })}
       </div>
 
-      {/* Table */}
+      {/* ── FILTER PANEL ── */}
+      <div style={{background:"#fff",border:`1px solid ${C.border}`,borderRadius:10,padding:"14px 16px"}}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}>
+          <span style={{fontSize:12,fontWeight:700,color:C.ink}}>Filters</span>
+          {hasFilters&&<button onClick={clearAll} style={{...btn("ghost"),fontSize:11,padding:"3px 10px",color:C.red}}>✕ Clear all</button>}
+        </div>
+        <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:10}}>
+          <div>
+            <label style={LBL}>Status / Stage</label>
+            <select value={fStatus} onChange={e=>resetPage(setFStatus)(e.target.value)} style={inp()}>
+              <option value="">All Statuses</option>
+              <option value="pending_manager">Pending Manager</option>
+              <option value="pending_approval">Pending Approval</option>
+              <option value="implementation">Implementation</option>
+              <option value="completed">Completed</option>
+              <option value="rejected">Rejected</option>
+            </select>
+          </div>
+          <div>
+            <label style={LBL}>Change Type</label>
+            <select value={fType} onChange={e=>resetPage(setFType)(e.target.value)} style={inp()}>
+              <option value="">All Types</option>
+              {["Standard","Normal","Major","Emergency"].map(t=><option key={t} value={t}>{t}</option>)}
+            </select>
+          </div>
+          <div>
+            <label style={LBL}>Environment</label>
+            <select value={fEnv} onChange={e=>resetPage(setFEnv)(e.target.value)} style={inp()}>
+              <option value="">All Environments</option>
+              {["Dev","Staging","Production"].map(e=><option key={e} value={e}>{e}</option>)}
+            </select>
+          </div>
+          <div>
+            <label style={LBL}>Risk Level</label>
+            <select value={fRisk} onChange={e=>resetPage(setFRisk)(e.target.value)} style={inp()}>
+              <option value="">All Risk Levels</option>
+              {["Low","Medium","High"].map(r=><option key={r} value={r}>{r}</option>)}
+            </select>
+          </div>
+          <div>
+            <label style={LBL}>Requester</label>
+            <select value={fUser} onChange={e=>resetPage(setFUser)(e.target.value)} style={inp()}>
+              <option value="">All Requesters</option>
+              {uniqueUsers.map(u=><option key={u.id} value={u.id}>{u.name}</option>)}
+            </select>
+          </div>
+          <div>
+            <label style={LBL}>Outcome</label>
+            <select value={fOutcome} onChange={e=>resetPage(setFOutcome)(e.target.value)} style={inp()}>
+              <option value="">Any Outcome</option>
+              <option value="successful">Successful</option>
+              <option value="failed">Failed</option>
+            </select>
+          </div>
+          <div>
+            <label style={LBL}>Date From</label>
+            <input type="date" value={fFrom} onChange={e=>resetPage(setFFrom)(e.target.value)} style={inp()}/>
+          </div>
+          <div>
+            <label style={LBL}>Date To</label>
+            <input type="date" value={fTo} onChange={e=>resetPage(setFTo)(e.target.value)} style={inp()}/>
+          </div>
+        </div>
+      </div>
+
+      {/* ── SEARCH + EXPORT ── */}
+      <div style={{display:"flex",gap:10,alignItems:"center"}}>
+        <div style={{flex:1,position:"relative"}}>
+          <span style={{position:"absolute",left:10,top:"50%",transform:"translateY(-50%)",color:C.muted,fontSize:14}}>🔍</span>
+          <input value={search} onChange={e=>resetPage(setSearch)(e.target.value)}
+            placeholder="Search by CR code, title, requester, system, description keywords…"
+            style={{...inp(),paddingLeft:32,width:"100%"}}/>
+        </div>
+        <div style={{fontSize:12,color:C.muted,whiteSpace:"nowrap"}}>{filtered.length} result{filtered.length!==1?"s":""}</div>
+        <button onClick={exportCSV} style={{...btn("ghost"),fontSize:12,padding:"7px 14px",whiteSpace:"nowrap"}}>⬇ Export CSV</button>
+      </div>
+
+      {/* ── TABLE ── */}
       <div style={card(0)}>
         <table style={{width:"100%",borderCollapse:"collapse"}}>
-          <TH cols={["CR ID","Title","Type","Environment","Risk","Raised By","Date","Stage","Action"]}/>
+          <TH cols={["CR ID","Title","Type","Environment","Risk","Raised By","Date Raised","Last Updated","Stage","Approval Level","Action"]}/>
           <tbody>
-            {shown.length===0
-              ?<tr><td colSpan={9}><Empty icon="📋" title="No change requests" sub={isTech?"Click '+ Raise Change Request' to create one":"Nothing to action right now"}/></td></tr>
-              :shown.map((c,i)=>(
-              <tr key={c.id} style={{borderBottom:i<shown.length-1?`1px solid #F8FAFC`:"none",cursor:"pointer"}} onClick={()=>setDetail(c)}>
-                <td style={{padding:"11px 14px",fontSize:11,fontWeight:700,color:C.ink}}>{c.id}{c.version>1&&<span style={{fontSize:9,color:C.muted,marginLeft:4}}>v{c.version}</span>}</td>
-                <td style={{padding:"11px 14px",fontSize:12,color:C.ink,maxWidth:180}}>
-                  <div style={{overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>
-                    {c.is_emergency&&<span style={{color:C.red,marginRight:4}}>⚡</span>}{c.title}
-                  </div>
-                </td>
-                <td style={{padding:"11px 14px",fontSize:11,color:C.muted}}>{c.change_type||c.changeType}</td>
-                <td style={{padding:"11px 14px"}}><EnvTag e={c.environment}/></td>
-                <td style={{padding:"11px 14px"}}><RiskTag r={c.risk_level||c.riskLevel}/></td>
-                <td style={{padding:"11px 14px",fontSize:11,color:C.muted}}>{users[c.initiator]?.name||"—"}</td>
-                <td style={{padding:"11px 14px",fontSize:11,color:C.muted,whiteSpace:"nowrap"}}>{fmtD(c.created_at)}</td>
-                <td style={{padding:"11px 14px",fontSize:11,color:C.muted,whiteSpace:"nowrap"}}>{stageLabel(c)}</td>
-                <td style={{padding:"11px 14px"}}>
-                  <button onClick={e=>{e.stopPropagation();setDetail(c);}} style={{...btn("ghost"),fontSize:11,padding:"4px 10px"}}>View →</button>
-                </td>
-              </tr>
-            ))}
+            {paged.length===0&&(
+              <tr><td colSpan={11} style={{padding:"48px",textAlign:"center",color:C.muted,fontSize:13}}>
+                {hasFilters?"No change requests match your filters.":isTech?"No change requests yet — click '+ Raise Change Request' to create one.":"Nothing to show."}
+              </td></tr>
+            )}
+            {paged.map((c,i)=>{
+              const raiser = users[c.initiator];
+              const sl     = stageLabel(c);
+              const ct     = c.change_type||c.changeType||"—";
+              const rl     = c.risk_level||c.riskLevel||"—";
+              const levelLabel = c.status==="pending_approval"
+                ? `L${c.current_level||1}`
+                : c.status==="pending_manager"?"Manager"
+                : c.status==="pending_implementation"||c.status==="in_progress"?"Impl":"—";
+              return (
+                <tr key={c.id} onClick={()=>setDetail(c)}
+                  style={{borderBottom:i<paged.length-1?`1px solid #F1F5F9`:"none",cursor:"pointer"}}>
+                  <td style={{padding:"11px 14px",fontSize:11,fontWeight:700,color:C.ink,whiteSpace:"nowrap"}}>
+                    {c.is_emergency&&<span style={{color:C.red,marginRight:4}}>⚡</span>}
+                    {c.id}
+                    {c.version>1&&<span style={{fontSize:9,color:C.muted,marginLeft:4,fontWeight:400}}>v{c.version}</span>}
+                  </td>
+                  <td style={{padding:"11px 14px",maxWidth:200}}>
+                    <div style={{fontSize:13,color:C.ink,fontWeight:500,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{c.title}</div>
+                    {c.system_name&&<div style={{fontSize:10,color:C.muted,marginTop:2}}>{c.system_name}</div>}
+                  </td>
+                  <td style={{padding:"11px 14px",fontSize:11,color:C.muted}}>{ct}</td>
+                  <td style={{padding:"11px 14px"}}><EnvTag e={c.environment}/></td>
+                  <td style={{padding:"11px 14px"}}><RiskTag r={rl}/></td>
+                  <td style={{padding:"11px 14px"}}>
+                    <div style={{display:"flex",alignItems:"center",gap:7}}>
+                      <Av i={raiser?.initials||"?"} s={24}/>
+                      <span style={{fontSize:12,color:C.ink}}>{raiser?.name||"—"}</span>
+                    </div>
+                  </td>
+                  <td style={{padding:"11px 14px",fontSize:11,color:C.muted,whiteSpace:"nowrap"}}>{fmtD(c.created_at)}</td>
+                  <td style={{padding:"11px 14px",fontSize:11,color:C.muted,whiteSpace:"nowrap"}}>{fmtD(c.updated_at)}</td>
+                  <td style={{padding:"11px 14px",whiteSpace:"nowrap"}}>
+                    <span style={{fontSize:11,fontWeight:700,padding:"3px 9px",borderRadius:20,background:sl.color+"18",color:sl.color}}>{sl.label}</span>
+                  </td>
+                  <td style={{padding:"11px 14px",fontSize:11,color:C.muted,textAlign:"center"}}>
+                    <span style={{fontWeight:600,color:levelLabel==="—"?C.muted:C.violet}}>{levelLabel}</span>
+                  </td>
+                  <td style={{padding:"11px 14px"}}>
+                    <button onClick={e=>{e.stopPropagation();setDetail(c);}}
+                      style={{...btn(["pending_manager","pending_approval","pending_implementation"].includes(c.status)?"primary":"ghost"),fontSize:11,padding:"4px 12px"}}>
+                      {["pending_manager","pending_approval","pending_implementation"].includes(c.status)?"Action →":"View →"}
+                    </button>
+                  </td>
+                </tr>
+              );
+            })}
           </tbody>
         </table>
-        <div style={{padding:"9px 14px",borderTop:`1px solid #F8FAFC`,fontSize:11,color:C.muted}}>{shown.length} records</div>
+
+        {/* ── PAGINATION ── */}
+        <div style={{padding:"12px 16px",borderTop:`1px solid ${C.border}`,display:"flex",justifyContent:"space-between",alignItems:"center",gap:12}}>
+          <div style={{fontSize:11,color:C.muted}}>
+            {filtered.length===0?"0 results":`${(page-1)*PAGE_SIZE+1}–${Math.min(page*PAGE_SIZE,filtered.length)} of ${filtered.length}`}
+          </div>
+          <div style={{display:"flex",gap:4}}>
+            <button onClick={()=>setPage(1)} disabled={page===1} style={{...btn("ghost"),padding:"4px 8px",fontSize:12,opacity:page===1?.4:1}}>«</button>
+            <button onClick={()=>setPage(p=>p-1)} disabled={page===1} style={{...btn("ghost"),padding:"4px 8px",fontSize:12,opacity:page===1?.4:1}}>‹</button>
+            {Array.from({length:Math.min(5,totalPages)},(_,i)=>{
+              const pg=Math.max(1,Math.min(page-2,totalPages-4))+i;
+              if(pg<1||pg>totalPages) return null;
+              return <button key={pg} onClick={()=>setPage(pg)} style={{...btn(pg===page?"primary":"ghost"),padding:"4px 10px",fontSize:12,minWidth:32}}>{pg}</button>;
+            })}
+            <button onClick={()=>setPage(p=>p+1)} disabled={page===totalPages} style={{...btn("ghost"),padding:"4px 8px",fontSize:12,opacity:page===totalPages?.4:1}}>›</button>
+            <button onClick={()=>setPage(totalPages)} disabled={page===totalPages} style={{...btn("ghost"),padding:"4px 8px",fontSize:12,opacity:page===totalPages?.4:1}}>»</button>
+          </div>
+        </div>
       </div>
 
       {form&&<CRForm onClose={()=>setForm(false)} onSubmit={submitCR} ctx={ctx}/>}
