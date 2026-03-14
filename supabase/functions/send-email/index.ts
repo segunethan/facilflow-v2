@@ -4,8 +4,8 @@
 // ============================================================
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts"
 
-const RESEND_API_KEY = Deno.env.get("RESEND_API_KEY") ?? ""
-const FROM_EMAIL     = 'facilflow@africaprudential.com'
+const RESEND_API_KEY = 're_2Z2fGbM8_CZBwztt3Jhnv8EkAeCzqQ6CC'
+const FROM_EMAIL     = 'facilflow@thesegunadebayo.com'
 const FROM_NAME      = 'FaciliFlow — Africa Prudential'
 
 // ── SHARED DESIGN TOKENS ───────────────────────────────────

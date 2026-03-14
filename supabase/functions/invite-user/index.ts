@@ -6,7 +6,9 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2"
 
 const SUPABASE_URL     = "https://jdvzoimemzijqamphgyg.supabase.co"
 const SERVICE_ROLE_KEY = Deno.env.get("SERVICE_ROLE_KEY") ?? ""
-const RESEND_API_KEY = Deno.env.get("RESEND_API_KEY") ?? ""
+const RESEND_API_KEY   = Deno.env.get("RESEND_API_KEY") ?? ""
+const FROM_EMAIL       = "facilflow@thesegunadebayo.com"
+const FROM_NAME        = "FaciliFlow — Africa Prudential"
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -34,7 +36,7 @@ serve(async (req) => {
     })
     if (authError) throw authError
 
-    const userId  = authData.user.id
+    const userId   = authData.user.id
     const initials = name.trim().split(" ").map((n: string) => n[0]).join("").slice(0, 2).toUpperCase()
 
     // 2. Create profile row with real auth UUID
@@ -45,21 +47,27 @@ serve(async (req) => {
       .single()
     if (profileError) throw profileError
 
-    // 3. Send our own branded invitation email via Resend (not Supabase default)
+    // 3. Send branded invitation email via Resend
     const roleDisplay = role.replace(/_/g, ' ').replace(/\b\w/g, (c: string) => c.toUpperCase())
-    await fetch("https://api.resend.com/emails", {
+    const emailRes = await fetch("https://api.resend.com/emails", {
       method: "POST",
       headers: {
         "Authorization": `Bearer ${RESEND_API_KEY}`,
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        from: "FaciliFlow — Africa Prudential <facilflow@africaprudential.com>",
+        from: `${FROM_NAME} <${FROM_EMAIL}>`,
         to: [email],
         subject: "You've been invited to join FaciliFlow — Africa Prudential",
         html: buildInviteEmail({ name, email, role: roleDisplay, dept, temp_password, invite_url: redirect_to }),
       }),
     })
+
+    const emailResult = await emailRes.json()
+    if (!emailRes.ok) {
+      console.error("Resend error:", emailResult)
+      // Don't throw — user was created successfully, just log the email failure
+    }
 
     return new Response(JSON.stringify({ success: true, user: profile }), {
       headers: { ...corsHeaders, "Content-Type": "application/json" },
@@ -84,7 +92,6 @@ function buildInviteEmail({ name, email, role, dept, temp_password, invite_url }
   const muted  = '#64748B'
   const border = '#E2E8F0'
   const pageBg = '#F7F8FA'
-  const green  = '#059669'
 
   const LOGO = `<svg width="48" height="48" viewBox="0 0 48 48" xmlns="http://www.w3.org/2000/svg"><rect width="48" height="48" rx="12" fill="#C8102E"/><text x="50%" y="54%" dominant-baseline="middle" text-anchor="middle" font-family="Arial,sans-serif" font-size="18" font-weight="900" fill="#fff" letter-spacing="-1">AP</text></svg>`
 
@@ -122,30 +129,60 @@ function buildInviteEmail({ name, email, role, dept, temp_password, invite_url }
 
             <!-- ACCOUNT DETAILS -->
             <table width="100%" cellpadding="0" cellspacing="0" style="border:1px solid ${border};border-radius:8px;overflow:hidden;margin-bottom:20px">
-              <tr><td style="padding:10px 14px;font-family:Arial,sans-serif;font-size:11px;font-weight:700;color:${muted};text-transform:uppercase;letter-spacing:0.8px;width:140px;background:#F8FAFC;border-bottom:1px solid ${border}">Name</td><td style="padding:10px 14px;font-family:Arial,sans-serif;font-size:13px;color:${ink};font-weight:500;border-bottom:1px solid ${border}">${name}</td></tr>
-              <tr><td style="padding:10px 14px;font-family:Arial,sans-serif;font-size:11px;font-weight:700;color:${muted};text-transform:uppercase;letter-spacing:0.8px;background:#F8FAFC;border-bottom:1px solid ${border}">Email</td><td style="padding:10px 14px;font-family:Arial,sans-serif;font-size:13px;color:${ink};font-weight:500;border-bottom:1px solid ${border}">${email}</td></tr>
-              <tr><td style="padding:10px 14px;font-family:Arial,sans-serif;font-size:11px;font-weight:700;color:${muted};text-transform:uppercase;letter-spacing:0.8px;background:#F8FAFC;border-bottom:1px solid ${border}">Role</td><td style="padding:10px 14px;font-family:Arial,sans-serif;font-size:13px;color:${ink};font-weight:500;border-bottom:1px solid ${border}">${role}</td></tr>
-              <tr><td style="padding:10px 14px;font-family:Arial,sans-serif;font-size:11px;font-weight:700;color:${muted};text-transform:uppercase;letter-spacing:0.8px;background:#F8FAFC;border-bottom:1px solid ${border}">Department</td><td style="padding:10px 14px;font-family:Arial,sans-serif;font-size:13px;color:${ink};font-weight:500;border-bottom:1px solid ${border}">${dept}</td></tr>
-              <tr><td style="padding:10px 14px;font-family:Arial,sans-serif;font-size:11px;font-weight:700;color:${muted};text-transform:uppercase;letter-spacing:0.8px;background:#F8FAFC">Temp Password</td><td style="padding:10px 14px;font-family:Arial,sans-serif;font-size:13px;color:${ink};font-weight:500"><code style="background:#F1F5F9;padding:3px 10px;border-radius:5px;font-size:14px;color:${brand};font-weight:700;letter-spacing:1px">${temp_password}</code></td></tr>
+              <tr>
+                <td style="padding:10px 14px;font-family:Arial,sans-serif;font-size:11px;font-weight:700;color:${muted};text-transform:uppercase;letter-spacing:0.8px;width:140px;background:#F8FAFC;border-bottom:1px solid ${border}">Name</td>
+                <td style="padding:10px 14px;font-family:Arial,sans-serif;font-size:13px;color:${ink};font-weight:500;border-bottom:1px solid ${border}">${name}</td>
+              </tr>
+              <tr>
+                <td style="padding:10px 14px;font-family:Arial,sans-serif;font-size:11px;font-weight:700;color:${muted};text-transform:uppercase;letter-spacing:0.8px;background:#F8FAFC;border-bottom:1px solid ${border}">Email</td>
+                <td style="padding:10px 14px;font-family:Arial,sans-serif;font-size:13px;color:${ink};font-weight:500;border-bottom:1px solid ${border}">${email}</td>
+              </tr>
+              <tr>
+                <td style="padding:10px 14px;font-family:Arial,sans-serif;font-size:11px;font-weight:700;color:${muted};text-transform:uppercase;letter-spacing:0.8px;background:#F8FAFC;border-bottom:1px solid ${border}">Role</td>
+                <td style="padding:10px 14px;font-family:Arial,sans-serif;font-size:13px;color:${ink};font-weight:500;border-bottom:1px solid ${border}">${role}</td>
+              </tr>
+              <tr>
+                <td style="padding:10px 14px;font-family:Arial,sans-serif;font-size:11px;font-weight:700;color:${muted};text-transform:uppercase;letter-spacing:0.8px;background:#F8FAFC;border-bottom:1px solid ${border}">Department</td>
+                <td style="padding:10px 14px;font-family:Arial,sans-serif;font-size:13px;color:${ink};font-weight:500;border-bottom:1px solid ${border}">${dept}</td>
+              </tr>
+              <tr>
+                <td style="padding:10px 14px;font-family:Arial,sans-serif;font-size:11px;font-weight:700;color:${muted};text-transform:uppercase;letter-spacing:0.8px;background:#F8FAFC">Temp Password</td>
+                <td style="padding:10px 14px;font-family:Arial,sans-serif;font-size:13px;color:${ink};font-weight:500">
+                  <code style="background:#F1F5F9;padding:3px 10px;border-radius:5px;font-size:14px;color:${brand};font-weight:700;letter-spacing:1px">${temp_password}</code>
+                </td>
+              </tr>
             </table>
 
             <!-- STEPS -->
-            <p style="font-family:Arial,sans-serif;font-size:13px;color:${muted};margin:0 0 8px;font-weight:600">How to get started:</p>
+            <p style="font-family:Arial,sans-serif;font-size:13px;color:${muted};margin:0 0 10px;font-weight:600">How to get started:</p>
             <table width="100%" cellpadding="0" cellspacing="0" style="margin-bottom:24px">
-              ${['Click the button below to open FaciliFlow', `Log in with your email and the temporary password shown above`, 'Update your password when prompted on first login'].map((step, i) => `
               <tr>
                 <td style="padding:8px 0;vertical-align:top;width:28px">
-                  <div style="width:22px;height:22px;background:${brand};border-radius:50%;text-align:center;font-family:Arial,sans-serif;font-size:11px;font-weight:700;color:#fff;line-height:22px">${i+1}</div>
+                  <div style="width:22px;height:22px;background:${brand};border-radius:50%;text-align:center;font-family:Arial,sans-serif;font-size:11px;font-weight:700;color:#fff;line-height:22px">1</div>
                 </td>
-                <td style="padding:8px 0 8px 8px;font-family:Arial,sans-serif;font-size:13px;color:#334155;line-height:1.6">${step}</td>
-              </tr>`).join('')}
+                <td style="padding:8px 0 8px 10px;font-family:Arial,sans-serif;font-size:13px;color:#334155;line-height:1.6">Click the button below to open FaciliFlow</td>
+              </tr>
+              <tr>
+                <td style="padding:8px 0;vertical-align:top;width:28px">
+                  <div style="width:22px;height:22px;background:${brand};border-radius:50%;text-align:center;font-family:Arial,sans-serif;font-size:11px;font-weight:700;color:#fff;line-height:22px">2</div>
+                </td>
+                <td style="padding:8px 0 8px 10px;font-family:Arial,sans-serif;font-size:13px;color:#334155;line-height:1.6">Log in with your email and the temporary password shown above</td>
+              </tr>
+              <tr>
+                <td style="padding:8px 0;vertical-align:top;width:28px">
+                  <div style="width:22px;height:22px;background:${brand};border-radius:50%;text-align:center;font-family:Arial,sans-serif;font-size:11px;font-weight:700;color:#fff;line-height:22px">3</div>
+                </td>
+                <td style="padding:8px 0 8px 10px;font-family:Arial,sans-serif;font-size:13px;color:#334155;line-height:1.6">Change your password immediately after your first login</td>
+              </tr>
             </table>
 
             <!-- CTA -->
             <table cellpadding="0" cellspacing="0">
-              <tr><td style="background:${brand};border-radius:8px">
-                <a href="${invite_url}" style="display:inline-block;padding:13px 32px;font-family:Arial,sans-serif;font-size:14px;font-weight:700;color:#fff;text-decoration:none;letter-spacing:0.2px">Access FaciliFlow →</a>
-              </td></tr>
+              <tr>
+                <td style="background:${brand};border-radius:8px">
+                  <a href="${invite_url}" style="display:inline-block;padding:13px 32px;font-family:Arial,sans-serif;font-size:14px;font-weight:700;color:#fff;text-decoration:none;letter-spacing:0.2px">Access FaciliFlow →</a>
+                </td>
+              </tr>
             </table>
 
             <div style="height:1px;background:${border};margin:24px 0"></div>
@@ -158,11 +195,16 @@ function buildInviteEmail({ name, email, role, dept, temp_password, invite_url }
         </td></tr>
 
         <!-- FOOTER -->
-        <tr><td style="padding:20px 0;text-align:center;border-top:1px solid ${border}">
-          <div style="font-family:Arial,sans-serif;font-size:11px;color:${muted};margin-bottom:4px"><strong style="color:${ink}">Africa Prudential Plc</strong> · FaciliFlow Facilities Management</div>
-          <div style="font-family:Arial,sans-serif;font-size:11px;color:#94A3B8">This is an automated message. Please do not reply to this email.</div>
-          <div style="font-family:Arial,sans-serif;font-size:11px;color:#CBD5E1;margin-top:4px">© ${new Date().getFullYear()} Africa Prudential Plc. All rights reserved.</div>
-        </td></tr>
+        <tr>
+          <td style="padding:20px 0;text-align:center">
+            <div style="font-family:Arial,sans-serif;font-size:11px;color:${muted};margin-bottom:4px">
+              <strong style="color:${ink}">Africa Prudential Plc</strong> · FaciliFlow Facilities Management
+            </div>
+            <div style="font-family:Arial,sans-serif;font-size:11px;color:#94A3B8">This is an automated message. Please do not reply to this email.</div>
+            <div style="font-family:Arial,sans-serif;font-size:11px;color:#CBD5E1;margin-top:4px">© ${new Date().getFullYear()} Africa Prudential Plc. All rights reserved.</div>
+          </td>
+        </tr>
+
       </table>
     </td></tr>
   </table>
