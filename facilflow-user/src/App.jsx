@@ -277,25 +277,28 @@ export default function UserApp({ currentUser }){
     if(!tenantId) return;
     const load = async ()=>{
       try {
-        const [reqData, crData, notifData, invData, userData, vehData, drvData] = await Promise.all([
+        const [reqData, crData, notifData, invData, userData] = await Promise.all([
           fetchRequests(tenantId),
           fetchCRs(tenantId),
           fetchNotifications(uid),
           fetchInventory(tenantId),
           supabase.from("users").select("*").eq("tenant_id", tenantId),
-          fetchVehicles(tenantId),
-          fetchDrivers(tenantId),
         ]);
         setReqs((reqData || []).map(normReq));
         setCrs((crData || []).map(normCR));
         setNotifs(notifData || []);
         setInvItems(invData || []);
-        setVehicles(vehData || []);
-        setDrivers(drvData || []);
         // Build users map keyed by id
         const umap = {};
         (userData.data || []).forEach(u => { umap[u.id] = u; });
         setUsers(umap);
+
+        // Fetch vehicles and drivers separately — non-fatal if RLS blocks
+        try {
+          const [vd, dd] = await Promise.all([fetchVehicles(tenantId), fetchDrivers(tenantId)]);
+          setVehicles(Array.isArray(vd) ? vd : []);
+          setDrivers(Array.isArray(dd) ? dd : []);
+        } catch(ve){ console.warn("Vehicles/drivers fetch skipped:", ve.message); }
       } catch(e){ console.error("Load error:", e); }
       finally { setLoading(false); }
     };
