@@ -639,10 +639,18 @@ function RequestsMgmt({ctx}){
     try {
       const req = allReqs.find(r=>r.id===id);
       const now = new Date().toISOString();
-      const history = [...(req.history||[]), {s:"delivered", at:now, by:uid, note:"Items delivered"}];
-      const saved = await updateRequest(id, {status:"delivered", history, delivered_at:now});
+      const isCarReq = req.type === "pool_car";
+      const statusLabel = isCarReq ? "completed" : "delivered";
+      const noteLabel   = isCarReq ? "Trip completed, vehicle returned" : "Items delivered";
+      const history = [...(req.history||[]), {s:statusLabel, at:now, by:uid, note:noteLabel}];
+      const saved = await updateRequest(id, {status:statusLabel, history, delivered_at:now});
+      // Reset vehicle back to available when trip is complete
+      if(isCarReq && req.assigned_vehicle){
+        await updateVehicle(req.assigned_vehicle, {status:"available"});
+        setVehicles(p=>p.map(v=>v.id===req.assigned_vehicle ? {...v,status:"available"} : v));
+      }
       setRequests(p=>p.map(r=>r.id===id ? saved : r));
-      addAudit("REQUEST_DELIVERED", id, `Request ${id} marked delivered`);
+      addAudit("REQUEST_DELIVERED", id, `Request ${id} marked ${statusLabel}`);
       flash("Marked as delivered");
       setSel(null);
     } catch(e){ flash(e.message,"error"); }
