@@ -2030,7 +2030,8 @@ function CRDetail({cr,onClose,ctx,onAction}){
   const [saving,    setSaving]  = useState(false);
 
   const myRoles   = ctx.myChangeRoles||[];
-  const isMgr     = myRoles.includes("change_manager") && cr.change_manager_id===uid;
+  // Change manager can approve any pending_manager CR — not just ones they were assigned to at creation
+  const isMgr     = myRoles.includes("change_manager");
   const isApprL1  = myRoles.includes("change_approver_l1");
   const isApprL2  = myRoles.includes("change_approver_l2");
   const isImpl    = myRoles.includes("change_implementer");
