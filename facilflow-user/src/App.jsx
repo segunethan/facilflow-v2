@@ -1185,7 +1185,7 @@ function ChangePage({ctx}){
         {k:"status",    label:"Status",      type:"select", w:160, opts:Object.entries(CR_STATUS).map(([v,m])=>({v,l:m.label}))},
         {k:"changeType",label:"Type",        type:"select", w:130, opts:["Standard","Normal","Emergency"].map(v=>({v,l:v}))},
         {k:"environment",label:"Environment",type:"select", w:130, opts:["Dev","Staging","Production"].map(v=>({v,l:v}))},
-        {k:"initiator", label:"Requester",   type:"select", w:160, opts:Object.values(USERS).map(u=>({v:u.id,l:u.name}))},
+        {k:"initiator", label:"Requester",   type:"select", w:160, opts:Object.values(users||{}).map(u=>({v:u.id,l:u.name}))},
         {k:"from",      label:"From",        type:"date",   w:140},
         {k:"to",        label:"To",          type:"date",   w:140},
       ]}/>
