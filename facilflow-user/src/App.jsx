@@ -245,7 +245,7 @@ function Filters({fields,values,onChange}){
 const NAV_GROUPS = [
   {group:"Main",items:[
     {key:"dashboard",    label:"Dashboard",       icon:"◫",  roles:["employee","manager","resource_team"]},
-    {key:"my_requests",  label:"My Requests",      icon:"≡",  roles:["employee","manager"]},
+    {key:"my_requests",  label:"My Requests",      icon:"≡",  roles:["employee","manager","resource_team"]},
     {key:"approvals",    label:"Approvals",        icon:"✓",  roles:["manager"]},
     {key:"queue",        label:"Processing Queue", icon:"↻",  roles:["resource_team"]},
   ]},

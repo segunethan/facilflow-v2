@@ -1,6 +1,6 @@
 import { supabase } from "./lib/supabase.js";
 import { fetchUsers, updateUser, deleteUser, fetchVehicles, createVehicle, updateVehicle, fetchDrivers, createDriver, updateDriver, fetchInventory, createInventoryItem, updateInventoryItem, fetchRequests, updateRequest, fetchCRs, updateCR, fetchAuditLog, addAuditEntry, fetchChangeRoles, fetchUserChangeRoles, assignChangeRole, removeChangeRole, fetchApprovalLevels, saveApprovalLevel, deleteApprovalLevel, fetchTenantConfig, saveTenantConfig } from "./lib/supabase.js";
-import { useState, useMemo, useCallback, useEffect } from "react";
+import React, { useState, useMemo, useCallback, useEffect } from "react";
 
 /* =========================================================
    AFRICA PRUDENTIAL — FaciliFlow  ADMIN PLATFORM
