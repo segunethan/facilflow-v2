@@ -2320,12 +2320,15 @@ function CalendarPage({ctx}){
   const MONTHS = ["January","February","March","April","May","June","July","August","September","October","November","December"];
   const DAYS   = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
 
-  const typeColor = t => ({
-    Standard:{bg:C.blueBg,color:C.blue},
-    Normal:  {bg:C.violetBg,color:C.violet},
-    Major:   {bg:C.orangeBg,color:C.orange},
-    Emergency:{bg:C.redBg,color:C.red},
-  }[t]||{bg:C.pageBg,color:C.muted};
+  const typeColor = (t) => {
+    const map = {
+      Standard:{bg:C.blueBg,color:C.blue},
+      Normal:  {bg:C.violetBg,color:C.violet},
+      Major:   {bg:C.orangeBg||C.amberBg,color:C.orange||C.amber},
+      Emergency:{bg:C.redBg,color:C.red},
+    };
+    return map[t]||{bg:C.pageBg,color:C.muted};
+  };
 
   return (
     <div style={{display:"flex",flexDirection:"column",gap:16}}>
