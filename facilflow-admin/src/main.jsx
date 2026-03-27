@@ -23,16 +23,23 @@ function Root() {
     return () => subscription.unsubscribe()
   }, [])
 
+  const ADMIN_ROLES = ['admin', 'super_admin', 'facility_admin', 'it_admin']
+
   const loadProfile = async (userId) => {
     try {
       const p = await getProfile(userId)
-      if (p.role !== 'admin') {
+      const primaryRole = p.role === 'admin' ? 'super_admin' : p.role
+      const extraRoles  = Array.isArray(p.admin_roles) ? p.admin_roles : []
+      const isAdmin = ADMIN_ROLES.includes(p.role) ||
+                      extraRoles.some(r => ADMIN_ROLES.includes(r))
+      if (!isAdmin) {
         await supabase.auth.signOut()
         alert('Only admin users can access the Admin Console.')
         setLoading(false)
         return
       }
-      setProfile(p)
+      // Normalise legacy 'admin' role to 'super_admin'
+      setProfile({ ...p, role: primaryRole })
     } catch (err) {
       console.error('Profile load error:', err)
     } finally {

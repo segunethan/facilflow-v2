@@ -140,7 +140,34 @@ const DRIVER_STATUSES = [
   {v:"resigned",   l:"Resigned",    color:C.muted, bg:"#F8FAFC"},
 ];
 
-const USER_ROLES = ["employee","manager","resource_team","admin"];
+const STAFF_ROLES = ["employee","manager","resource_team"];
+const ADMIN_ROLE_TYPES = ["super_admin","facility_admin","it_admin"];
+const USER_ROLES = [...STAFF_ROLES, ...ADMIN_ROLE_TYPES];
+
+const ADMIN_ROLE_META = {
+  super_admin:    { label:"Super Admin",    color:C.brand,  bg:C.brandLt },
+  facility_admin: { label:"Facility Admin", color:C.blue,   bg:C.blueBg  },
+  it_admin:       { label:"IT Admin",       color:C.violet, bg:C.violetBg},
+};
+
+// Returns all effective admin roles for a user (handles backward compat with 'admin')
+const getAdminRoles = (user) => {
+  if (!user) return [];
+  const primary = user.role === "admin" ? "super_admin" : user.role;
+  const extra   = Array.isArray(user.admin_roles) ? user.admin_roles : [];
+  const merged  = new Set([...(ADMIN_ROLE_TYPES.includes(primary) ? [primary] : []), ...extra]);
+  return [...merged];
+};
+
+// True if user can access a module that requires any of the given admin roles
+const hasAdminAccess = (user, roles) => {
+  const userRoles = getAdminRoles(user);
+  if (userRoles.includes("super_admin")) return true;
+  const check = Array.isArray(roles) ? roles : [roles];
+  return check.some(r => userRoles.includes(r));
+};
+
+const isSuperAdmin = (user) => getAdminRoles(user).includes("super_admin");
 
 // ── HELPERS ────────────────────────────────────────────────────
 const fmtDT = d => new Date(d).toLocaleString("en-GB",{day:"2-digit",month:"short",year:"numeric",hour:"2-digit",minute:"2-digit"});
@@ -212,6 +239,16 @@ function Empty({icon="—",title,sub}){
   return <div style={{textAlign:"center",padding:"40px 24px",color:C.muted}}><div style={{fontSize:34,marginBottom:10}}>{icon}</div><div style={{fontWeight:600,color:C.ink2,fontSize:14}}>{title}</div>{sub&&<div style={{fontSize:12,marginTop:4}}>{sub}</div>}</div>;
 }
 
+function AccessDenied(){
+  return (
+    <div style={{minHeight:"40vh",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:12}}>
+      <div style={{width:60,height:60,borderRadius:16,background:C.redBg,display:"flex",alignItems:"center",justifyContent:"center",fontSize:26}}>🚫</div>
+      <div style={{fontSize:16,fontWeight:700,color:C.ink}}>Access Denied</div>
+      <div style={{fontSize:13,color:C.muted,textAlign:"center",maxWidth:320}}>You don't have permission to access this module. Contact your Super Admin if you need access.</div>
+    </div>
+  );
+}
+
 function Filters({fields,values,onChange}){
   return (
     <div style={{display:"flex",gap:10,flexWrap:"wrap",padding:"12px 14px",background:"#fff",border:`1px solid ${C.border}`,borderRadius:8,marginBottom:16,alignItems:"flex-end"}}>
@@ -247,25 +284,26 @@ function StatCard({label,value,sub,color=C.brand,icon}){
 }
 
 // ── NAV ────────────────────────────────────────────────────────
+// roles: which admin role types can see this group
 const NAV = [
-  {group:"Overview",items:[
+  {group:"Overview", roles:["super_admin","facility_admin","it_admin"], items:[
     {k:"dashboard",  l:"Dashboard",        icon:"◫"},
   ]},
-  {group:"People & Access",items:[
+  {group:"People & Access", roles:["super_admin"], items:[
     {k:"users",      l:"User Management",  icon:"👤"},
   ]},
-  {group:"Facilities",items:[
+  {group:"Facilities", roles:["super_admin","facility_admin"], items:[
     {k:"requests",   l:"Facility Requests",icon:"📋"},
     {k:"fleet",      l:"Fleet Management", icon:"🚗"},
     {k:"drivers",    l:"Driver Roster",    icon:"🪪"},
     {k:"inventory",  l:"Inventory",        icon:"📦"},
   ]},
-  {group:"Change Management",items:[
+  {group:"Change Management", roles:["super_admin","it_admin"], items:[
     {k:"change_requests", l:"Change Requests",  icon:"⟳"},
     {k:"cr_policy",       l:"CR Policy",        icon:"⚙"},
     {k:"change_config",   l:"Change Config",    icon:"🔧"},
   ]},
-  {group:"System",items:[
+  {group:"System", roles:["super_admin"], items:[
     {k:"notifications",l:"Notifications",  icon:"🔔"},
     {k:"audit",        l:"Audit Log",       icon:"📋"},
   ]},
@@ -354,8 +392,11 @@ export default function AdminApp({ currentUser }){
     </div>
   );
 
+  const adminRoles = getAdminRoles(me);
+
   const ctx={
     me, tid, uid,
+    adminRoles,
     users, setUsers,
     vehicles, setVehicles,
     drivers, setDrivers,
@@ -388,13 +429,21 @@ export default function AdminApp({ currentUser }){
             <div style={{fontSize:13,fontWeight:800,color:"#fff",letterSpacing:"-.02em",lineHeight:1.1}}>Africa Prudential</div>
             <div style={{fontSize:9,color:"#64748B",fontWeight:600,letterSpacing:".06em",textTransform:"uppercase"}}>Admin Console</div>
           </div>
-          <div style={{marginLeft:8,padding:"2px 10px",borderRadius:20,background:C.brand,fontSize:10,fontWeight:700,color:"#fff",letterSpacing:".04em"}}>ADMIN</div>
+          {adminRoles.map(r=>{
+            const m = ADMIN_ROLE_META[r] || {label:r,color:C.brand,bg:C.brandLt};
+            return <div key={r} style={{marginLeft:4,padding:"2px 10px",borderRadius:20,background:m.color,fontSize:10,fontWeight:700,color:"#fff",letterSpacing:".04em",textTransform:"uppercase"}}>{m.label}</div>;
+          })}
         </div>
         <div style={{display:"flex",gap:10,alignItems:"center"}}>
           <div style={{fontSize:11,color:"#94A3B8",fontWeight:500}}>Tenant: Africa Prudential Plc</div>
           <div style={{width:1,height:18,background:"#334155"}}/>
           <Av i={me?.initials||"AD"} s={28}/>
-          <div><div style={{fontSize:12,fontWeight:700,color:"#F1F5F9"}}>{me?.name?.split(" ")[0]}</div><div style={{fontSize:10,color:"#64748B",textTransform:"capitalize"}}>Admin</div></div>
+          <div>
+            <div style={{fontSize:12,fontWeight:700,color:"#F1F5F9"}}>{me?.name?.split(" ")[0]}</div>
+            <div style={{fontSize:10,color:"#64748B",textTransform:"capitalize"}}>
+              {adminRoles.map(r=>ADMIN_ROLE_META[r]?.label||r).join(" · ")}
+            </div>
+          </div>
           <button onClick={()=>supabase.auth.signOut()} style={{...btn("ghost"),fontSize:11,padding:"4px 9px",marginLeft:4,color:"#94A3B8",borderColor:"#334155"}}>Sign out</button>
         </div>
       </header>
@@ -403,7 +452,7 @@ export default function AdminApp({ currentUser }){
         {/* ── SIDEBAR ── */}
         <aside style={{width:210,background:C.sidebar,display:"flex",flexDirection:"column",flexShrink:0}}>
           <nav style={{flex:1,padding:"10px 0",overflowY:"auto"}}>
-            {NAV.map(g=>(
+            {NAV.filter(g=>hasAdminAccess(me, g.roles)).map(g=>(
               <div key={g.group} style={{marginBottom:4}}>
                 <div style={{padding:"8px 16px 3px",fontSize:9,fontWeight:700,color:"#475569",textTransform:"uppercase",letterSpacing:".1em"}}>{g.group}</div>
                 {g.items.map(n=>{
@@ -429,17 +478,17 @@ export default function AdminApp({ currentUser }){
 
         {/* ── CONTENT ── */}
         <main style={{flex:1,padding:28,overflowY:"auto",maxHeight:"calc(100vh - 52px)"}}>
-          {page==="dashboard"      && <AdminDash     ctx={ctx} setPage={setPage}/>}
-          {page==="users"          && <UserMgmt      ctx={ctx}/>}
-          {page==="requests"       && <RequestsMgmt  ctx={ctx}/>}
-          {page==="fleet"          && <FleetMgmt     ctx={ctx}/>}
-          {page==="drivers"        && <DriverRoster  ctx={ctx}/>}
-          {page==="inventory"      && <InventoryMgmt ctx={ctx}/>}
-          {page==="change_requests"&& <CRAdmin       ctx={ctx}/>}
-          {page==="cr_policy"      && <CRPolicy      ctx={ctx}/>}
-          {page==="change_config"   && <ChangeConfig  ctx={ctx}/>}
-          {page==="notifications"  && <NotifPolicy   ctx={ctx}/>}
-          {page==="audit"          && <AuditLog      ctx={ctx}/>}
+          {page==="dashboard"       && <AdminDash     ctx={ctx} setPage={setPage}/>}
+          {page==="users"           && (hasAdminAccess(me,["super_admin"]) ? <UserMgmt ctx={ctx}/> : <AccessDenied/>)}
+          {page==="requests"        && (hasAdminAccess(me,["super_admin","facility_admin"]) ? <RequestsMgmt ctx={ctx}/> : <AccessDenied/>)}
+          {page==="fleet"           && (hasAdminAccess(me,["super_admin","facility_admin"]) ? <FleetMgmt    ctx={ctx}/> : <AccessDenied/>)}
+          {page==="drivers"         && (hasAdminAccess(me,["super_admin","facility_admin"]) ? <DriverRoster ctx={ctx}/> : <AccessDenied/>)}
+          {page==="inventory"       && (hasAdminAccess(me,["super_admin","facility_admin"]) ? <InventoryMgmt ctx={ctx}/> : <AccessDenied/>)}
+          {page==="change_requests" && (hasAdminAccess(me,["super_admin","it_admin"])       ? <CRAdmin      ctx={ctx}/> : <AccessDenied/>)}
+          {page==="cr_policy"       && (hasAdminAccess(me,["super_admin","it_admin"])       ? <CRPolicy     ctx={ctx}/> : <AccessDenied/>)}
+          {page==="change_config"   && (hasAdminAccess(me,["super_admin","it_admin"])       ? <ChangeConfig ctx={ctx}/> : <AccessDenied/>)}
+          {page==="notifications"   && (hasAdminAccess(me,["super_admin"])                  ? <NotifPolicy  ctx={ctx}/> : <AccessDenied/>)}
+          {page==="audit"           && (hasAdminAccess(me,["super_admin"])                  ? <AuditLog     ctx={ctx}/> : <AccessDenied/>)}
         </main>
       </div>
       <Toast t={toast}/>
@@ -451,95 +500,113 @@ export default function AdminApp({ currentUser }){
 // ADMIN DASHBOARD
 // ══════════════════════════════════════════════════════════════
 function AdminDash({ctx,setPage}){
-  const {users,vehicles,drivers,inventory,crs,requests}=ctx;
+  const {me,users,vehicles,drivers,inventory,crs,requests,adminRoles}=ctx;
   const activeUsers   = users.filter(u=>u.status==="active").length;
   const availVeh      = vehicles.filter(v=>v.status==="available").length;
   const lowStock      = inventory.filter(i=>i.stock<5).length;
   const pendingCRs    = crs.filter(c=>["pending_line_manager","pending_secondary","change_review"].includes(c.status)).length;
   const pendingReqs   = (requests||[]).filter(r=>r.status==="pending_approval").length;
 
+  const showFacility = hasAdminAccess(me,["facility_admin","super_admin"]);
+  const showIT       = hasAdminAccess(me,["it_admin","super_admin"]);
+
+  const roleLabel = isSuperAdmin(me) ? "Super Admin · Full Platform Access"
+    : adminRoles.map(r=>ADMIN_ROLE_META[r]?.label||r).join(" · ") + " · Tenant Overview";
+
   return (
     <div style={{display:"flex",flexDirection:"column",gap:20}}>
-      <PageTitle title="Admin Dashboard" sub="Africa Prudential Plc · Tenant Overview"/>
+      <PageTitle title="Admin Dashboard" sub={`Africa Prudential Plc · ${roleLabel}`}/>
 
-      {/* Stats */}
+      {/* Role-scoped access notice for non-super admins */}
+      {!isSuperAdmin(me)&&(
+        <div style={{padding:"10px 16px",borderRadius:8,background:C.blueBg,border:`1px solid ${C.blue}30`,fontSize:13,color:C.blue,fontWeight:500,display:"flex",alignItems:"center",gap:10}}>
+          <span style={{fontSize:16}}>ℹ️</span>
+          <span>You have access to: <strong>{adminRoles.map(r=>ADMIN_ROLE_META[r]?.label||r).join(" and ")}</strong> modules only.</span>
+        </div>
+      )}
+
+      {/* Stats — show only what the role can access */}
       <div style={{display:"flex",gap:14,flexWrap:"wrap"}}>
-        <StatCard label="Active Users"       value={activeUsers}  sub={`${users.length} total`}        color={C.blue}   icon="👥"/>
-        <StatCard label="Fleet Available"    value={availVeh}     sub={`${vehicles.length} vehicles`}   color={C.green}  icon="🚗"/>
-        <StatCard label="Pending Requests"   value={pendingReqs}  sub="Awaiting approval"               color={C.brand}  icon="📋" onClick={()=>setPage("requests")}/>
-        <StatCard label="Pending CRs"        value={pendingCRs}   sub="Awaiting action"                 color={C.violet} icon="⟳"/>
+        {isSuperAdmin(me)&&<StatCard label="Active Users" value={activeUsers} sub={`${users.length} total`} color={C.blue} icon="👥"/>}
+        {showFacility&&<StatCard label="Fleet Available" value={availVeh} sub={`${vehicles.length} vehicles`} color={C.green} icon="🚗"/>}
+        {showFacility&&<StatCard label="Pending Requests" value={pendingReqs} sub="Awaiting approval" color={C.brand} icon="📋"/>}
+        {showIT&&<StatCard label="Pending CRs" value={pendingCRs} sub="Awaiting action" color={C.violet} icon="⟳"/>}
       </div>
 
-      <div style={{display:"grid",gridTemplateColumns:"1.4fr 1fr",gap:16}}>
-        {/* Recent CRs */}
-        <div style={card(0)}>
-          <div style={{padding:"14px 16px",borderBottom:`1px solid ${C.border}`,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
-            <span style={{fontSize:14,fontWeight:700,color:C.ink}}>Recent Change Requests</span>
-            <button onClick={()=>setPage("change_requests")} style={{...btn("ghost"),fontSize:11,padding:"4px 10px"}}>View all →</button>
+      <div style={{display:"grid",gridTemplateColumns:showFacility&&showIT?"1.4fr 1fr":"1fr",gap:16}}>
+        {/* Recent CRs — IT Admin / Super Admin only */}
+        {showIT&&(
+          <div style={card(0)}>
+            <div style={{padding:"14px 16px",borderBottom:`1px solid ${C.border}`,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+              <span style={{fontSize:14,fontWeight:700,color:C.ink}}>Recent Change Requests</span>
+              <button onClick={()=>setPage("change_requests")} style={{...btn("ghost"),fontSize:11,padding:"4px 10px"}}>View all →</button>
+            </div>
+            <table style={{width:"100%",borderCollapse:"collapse"}}>
+              <TH cols={["ID","Title","Type","Env","Status"]}/>
+              <tbody>
+                {crs.slice(0,5).map((c,i)=>(
+                  <tr key={c.id} style={{borderBottom:i<4?`1px solid #FAFAFA`:"none"}}>
+                    <td style={{padding:"10px 14px",fontSize:11,fontWeight:700,color:C.ink}}>{c.id}</td>
+                    <td style={{padding:"10px 14px",fontSize:12,color:C.ink,maxWidth:180}}><div style={{overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{c.isEmergency&&"⚡ "}{c.title}</div></td>
+                    <td style={{padding:"10px 14px",fontSize:11,color:C.muted}}>{c.changeType}</td>
+                    <td style={{padding:"10px 14px"}}><EnvTag e={c.environment}/></td>
+                    <td style={{padding:"10px 14px"}}><CRChip s={c.status}/></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           </div>
+        )}
+
+        {/* Facility panel — Facility Admin / Super Admin only */}
+        {showFacility&&(
+          <div style={{display:"flex",flexDirection:"column",gap:12}}>
+            <div style={card(16)}>
+              <div style={{fontSize:13,fontWeight:700,color:C.ink,marginBottom:12}}>🚗 Fleet Status</div>
+              {VEHICLE_STATUSES.map(s=>{
+                const count=vehicles.filter(v=>v.status===s.v).length;
+                return count>0?(
+                  <div key={s.v} style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6}}>
+                    <Chip label={s.l} color={s.color} bg={s.bg}/>
+                    <span style={{fontSize:13,fontWeight:700,color:C.ink}}>{count}</span>
+                  </div>
+                ):null;
+              })}
+            </div>
+            {lowStock>0&&(
+              <div style={{...card(14),border:`1px solid ${C.amber}40`,background:C.amberBg}}>
+                <div style={{fontSize:13,fontWeight:700,color:C.amber,marginBottom:10}}>⚠ Low Stock Alerts</div>
+                {inventory.filter(i=>i.stock<5).map(i=>(
+                  <div key={i.id} style={{display:"flex",justifyContent:"space-between",fontSize:12,color:C.amber,marginBottom:4}}>
+                    <span>{i.name}</span><span style={{fontWeight:700}}>{i.stock} {i.unit}s</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* Tenant info — Super Admin only */}
+      {isSuperAdmin(me)&&(
+        <div style={card(0)}>
+          <div style={{padding:"14px 16px",borderBottom:`1px solid ${C.border}`,fontSize:14,fontWeight:700,color:C.ink}}>Tenant Overview</div>
           <table style={{width:"100%",borderCollapse:"collapse"}}>
-            <TH cols={["ID","Title","Type","Env","Status"]}/>
+            <TH cols={["Tenant","Domain","Plan","Users","Status"]}/>
             <tbody>
-              {crs.slice(0,5).map((c,i)=>(
-                <tr key={c.id} style={{borderBottom:i<4?`1px solid #FAFAFA`:"none"}}>
-                  <td style={{padding:"10px 14px",fontSize:11,fontWeight:700,color:C.ink}}>{c.id}</td>
-                  <td style={{padding:"10px 14px",fontSize:12,color:C.ink,maxWidth:180}}><div style={{overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{c.isEmergency&&"⚡ "}{c.title}</div></td>
-                  <td style={{padding:"10px 14px",fontSize:11,color:C.muted}}>{c.changeType}</td>
-                  <td style={{padding:"10px 14px"}}><EnvTag e={c.environment}/></td>
-                  <td style={{padding:"10px 14px"}}><CRChip s={c.status}/></td>
+              {TENANTS.map((t,i)=>(
+                <tr key={t.id} style={{borderBottom:i<TENANTS.length-1?`1px solid #FAFAFA`:"none"}}>
+                  <td style={{padding:"11px 14px",fontSize:13,fontWeight:700,color:C.ink}}>{t.name}</td>
+                  <td style={{padding:"11px 14px",fontSize:12,color:C.muted}}>{t.domain}</td>
+                  <td style={{padding:"11px 14px"}}><Chip label={t.plan} color={C.blue} bg={C.blueBg}/></td>
+                  <td style={{padding:"11px 14px",fontSize:13,color:C.ink}}>{t.users}</td>
+                  <td style={{padding:"11px 14px"}}><Chip label={t.status==="active"?"Active":"Inactive"} color={t.status==="active"?C.green:C.muted} bg={t.status==="active"?C.greenBg:"#F8FAFC"}/></td>
                 </tr>
               ))}
             </tbody>
           </table>
         </div>
-
-        {/* Right panel */}
-        <div style={{display:"flex",flexDirection:"column",gap:12}}>
-          {/* Vehicle status */}
-          <div style={card(16)}>
-            <div style={{fontSize:13,fontWeight:700,color:C.ink,marginBottom:12}}>🚗 Fleet Status</div>
-            {VEHICLE_STATUSES.map(s=>{
-              const count=vehicles.filter(v=>v.status===s.v).length;
-              return count>0?(
-                <div key={s.v} style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6}}>
-                  <Chip label={s.l} color={s.color} bg={s.bg}/>
-                  <span style={{fontSize:13,fontWeight:700,color:C.ink}}>{count}</span>
-                </div>
-              ):null;
-            })}
-          </div>
-          {/* Low stock */}
-          {lowStock>0&&(
-            <div style={{...card(14),border:`1px solid ${C.amber}40`,background:C.amberBg}}>
-              <div style={{fontSize:13,fontWeight:700,color:C.amber,marginBottom:10}}>⚠ Low Stock Alerts</div>
-              {inventory.filter(i=>i.stock<5).map(i=>(
-                <div key={i.id} style={{display:"flex",justifyContent:"space-between",fontSize:12,color:C.amber,marginBottom:4}}>
-                  <span>{i.name}</span><span style={{fontWeight:700}}>{i.stock} {i.unit}s</span>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-      </div>
-
-      {/* Tenant info */}
-      <div style={card(0)}>
-        <div style={{padding:"14px 16px",borderBottom:`1px solid ${C.border}`,fontSize:14,fontWeight:700,color:C.ink}}>Tenant Overview</div>
-        <table style={{width:"100%",borderCollapse:"collapse"}}>
-          <TH cols={["Tenant","Domain","Plan","Users","Status"]}/>
-          <tbody>
-            {TENANTS.map((t,i)=>(
-              <tr key={t.id} style={{borderBottom:i<TENANTS.length-1?`1px solid #FAFAFA`:"none"}}>
-                <td style={{padding:"11px 14px",fontSize:13,fontWeight:700,color:C.ink}}>{t.name}</td>
-                <td style={{padding:"11px 14px",fontSize:12,color:C.muted}}>{t.domain}</td>
-                <td style={{padding:"11px 14px"}}><Chip label={t.plan} color={C.blue} bg={C.blueBg}/></td>
-                <td style={{padding:"11px 14px",fontSize:13,color:C.ink}}>{t.users}</td>
-                <td style={{padding:"11px 14px"}}><Chip label={t.status==="active"?"Active":"Inactive"} color={t.status==="active"?C.green:C.muted} bg={t.status==="active"?C.greenBg:"#F8FAFC"}/></td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
+      )}
     </div>
   );
 }
@@ -1151,7 +1218,10 @@ function UserMgmt({ctx}){
   const [confirm,setConfirm]=useState(null);
 
   const shown=users.filter(u=>{
-    if(f.role&&u.role!==f.role)return false;
+    if(f.role){
+      const allRoles=[u.role,...(u.admin_roles||[])];
+      if(!allRoles.includes(f.role))return false;
+    }
     if(f.status&&u.status!==f.status)return false;
     if(f.q){const q=f.q.toLowerCase();if(!u.name.toLowerCase().includes(q)&&!u.email.toLowerCase().includes(q))return false;}
     return true;
@@ -1178,26 +1248,37 @@ function UserMgmt({ctx}){
       addAudit("USER_DELETED",id,"User deleted");flash("User deleted");setConfirm(null);
     }catch(e){flash(e.message,"error");}
   };
-  const invite=async(email,name,role,dept,tempPassword)=>{
+  const invite=async(email,name,role,dept,tempPassword,adminRoles=[])=>{
     try{
-      const redirectTo = role==="admin"
+      const isAdminRole = ADMIN_ROLE_TYPES.includes(role);
+      const redirectTo  = isAdminRole
         ? "https://facilflow-v2-admin.vercel.app"
         : "https://facilflowuser.vercel.app";
+      const primaryRole = isAdminRole ? role : role;
 
-      // Call edge function which uses service role key
       const { data, error } = await supabase.functions.invoke("invite-user", {
-        body: { email, name, role, dept, tenant_id:tid, temp_password:tempPassword, redirect_to:redirectTo }
+        body: { email, name, role:primaryRole, dept, tenant_id:tid, temp_password:tempPassword, redirect_to:redirectTo }
       });
       if(error) throw error;
       if(data.error) throw new Error(data.error);
 
-      setUsers(p=>[...p, data.user]);
-      addAudit("USER_INVITED", email, `${name} invited as ${role}`);
+      // If multiple admin roles, persist them
+      if(isAdminRole && adminRoles.length > 1){
+        try{ await updateUser(data.user.id, {admin_roles:adminRoles}); } catch(_){}
+      }
+
+      setUsers(p=>[...p, {...data.user, admin_roles:adminRoles}]);
+      const roleLabel = adminRoles.length>1 ? adminRoles.map(r=>ADMIN_ROLE_META[r]?.label||r).join(", ") : role;
+      addAudit("USER_INVITED", email, `${name} invited as ${roleLabel}`);
       flash(`Invitation sent to ${email}`);
     }catch(e){ flash(e.message,"error"); }
   };
-  const updateUser=(id,data)=>{
-    setUsers(p=>p.map(u=>u.id!==id?u:{...u,...data}));addAudit("USER_UPDATED",id,"User details updated");flash("User updated");
+  const updateUserLocal=async(id,data)=>{
+    try{
+      await updateUser(id,data);
+      setUsers(p=>p.map(u=>u.id!==id?u:{...u,...data}));
+      addAudit("USER_UPDATED",id,"User details updated");flash("User updated");
+    }catch(e){flash(e.message,"error");}
   };
 
   return (
@@ -1206,46 +1287,65 @@ function UserMgmt({ctx}){
         action={<button onClick={()=>setModal("add")} style={btn("primary")}>+ Invite User</button>}/>
       <Filters values={f} onChange={setF} fields={[
         {k:"q",     label:"Search", type:"text",   w:200,ph:"Name or email…"},
-        {k:"role",  label:"Role",   type:"select", w:150,opts:USER_ROLES.map(v=>({v,l:v.replace("_"," ")}))},
+        {k:"role",  label:"Role",   type:"select", w:170,opts:[
+          ...STAFF_ROLES.map(v=>({v,l:v.replace(/_/g," ")})),
+          {v:"super_admin",l:"Super Admin"},
+          {v:"facility_admin",l:"Facility Admin"},
+          {v:"it_admin",l:"IT Admin"},
+        ]},
         {k:"status",label:"Status", type:"select", w:130,opts:[{v:"active",l:"Active"},{v:"suspended",l:"Suspended"}]},
       ]}/>
       <div style={card(0)}>
         <table style={{width:"100%",borderCollapse:"collapse"}}>
-          <TH cols={["Name","Email","Role","Department","Status","Date Created",""]}/>
+          <TH cols={["Name","Email","Roles","Department","Status","Date Created",""]}/>
           <tbody>
             {shown.length===0?<tr><td colSpan={7}><Empty icon="👤" title="No users found"/></td></tr>
-            :shown.map((u,i)=>(
-              <tr key={u.id} style={{borderBottom:i<shown.length-1?`1px solid #FAFAFA`:"none"}}>
-                <td style={{padding:"11px 14px"}}>
-                  <div style={{display:"flex",gap:9,alignItems:"center"}}>
-                    <Av i={u.initials} s={28} bg={u.status==="suspended"?C.muted:C.brand}/>
-                    <span style={{fontSize:13,fontWeight:600,color:u.status==="suspended"?C.muted:C.ink}}>{u.name}</span>
-                  </div>
-                </td>
-                <td style={{padding:"11px 14px",fontSize:12,color:C.muted}}>{u.email}</td>
-                <td style={{padding:"11px 14px"}}><span style={{fontSize:11,fontWeight:600,padding:"2px 8px",borderRadius:4,background:C.surface,color:C.ink2,textTransform:"capitalize"}}>{u.role.replace("_"," ")}</span></td>
-                <td style={{padding:"11px 14px",fontSize:12,color:C.muted}}>{u.dept}</td>
-                <td style={{padding:"11px 14px"}}><UChip s={u.status}/></td>
-                <td style={{padding:"11px 14px",fontSize:11,color:C.muted,whiteSpace:"nowrap"}}>{fmtSafe(u.created_at)}</td>
-                <td style={{padding:"11px 14px"}}>
-                  <div style={{display:"flex",gap:5}}>
-                    <button onClick={()=>setModal({edit:u})} style={{...btn("ghost"),fontSize:11,padding:"4px 8px"}}>Edit</button>
-                    {u.status==="active"
-                      ?<button onClick={()=>setConfirm({type:"suspend",user:u})} style={{...btn("ghost"),fontSize:11,padding:"4px 8px",color:C.amber,borderColor:C.amber+"30"}}>Suspend</button>
-                      :<button onClick={()=>reinstate(u.id)} style={{...btn("ghost"),fontSize:11,padding:"4px 8px",color:C.green,borderColor:C.green+"30"}}>Reinstate</button>}
-                    <button onClick={()=>setConfirm({type:"delete",user:u})} style={{...btn("ghost"),fontSize:11,padding:"4px 8px",color:C.red,borderColor:C.red+"30"}}>Delete</button>
-                  </div>
-                </td>
-              </tr>
-            ))}
+            :shown.map((u,i)=>{
+              // Build the full role list for display
+              const isAdmin = ADMIN_ROLE_TYPES.includes(u.role) || u.role==="admin";
+              const displayRoles = isAdmin ? getAdminRoles(u) : [u.role];
+              return (
+                <tr key={u.id} style={{borderBottom:i<shown.length-1?`1px solid #FAFAFA`:"none"}}>
+                  <td style={{padding:"11px 14px"}}>
+                    <div style={{display:"flex",gap:9,alignItems:"center"}}>
+                      <Av i={u.initials} s={28} bg={u.status==="suspended"?C.muted:C.brand}/>
+                      <span style={{fontSize:13,fontWeight:600,color:u.status==="suspended"?C.muted:C.ink}}>{u.name}</span>
+                    </div>
+                  </td>
+                  <td style={{padding:"11px 14px",fontSize:12,color:C.muted}}>{u.email}</td>
+                  <td style={{padding:"11px 14px"}}>
+                    <div style={{display:"flex",gap:4,flexWrap:"wrap"}}>
+                      {displayRoles.map(r=>{
+                        const m = ADMIN_ROLE_META[r];
+                        return m
+                          ? <Chip key={r} label={m.label} color={m.color} bg={m.bg}/>
+                          : <span key={r} style={{fontSize:11,fontWeight:600,padding:"2px 8px",borderRadius:4,background:C.surface,color:C.ink2,textTransform:"capitalize"}}>{r.replace(/_/g," ")}</span>;
+                      })}
+                    </div>
+                  </td>
+                  <td style={{padding:"11px 14px",fontSize:12,color:C.muted}}>{u.dept}</td>
+                  <td style={{padding:"11px 14px"}}><UChip s={u.status}/></td>
+                  <td style={{padding:"11px 14px",fontSize:11,color:C.muted,whiteSpace:"nowrap"}}>{fmtSafe(u.created_at)}</td>
+                  <td style={{padding:"11px 14px"}}>
+                    <div style={{display:"flex",gap:5}}>
+                      <button onClick={()=>setModal({edit:u})} style={{...btn("ghost"),fontSize:11,padding:"4px 8px"}}>Edit</button>
+                      {u.status==="active"
+                        ?<button onClick={()=>setConfirm({type:"suspend",user:u})} style={{...btn("ghost"),fontSize:11,padding:"4px 8px",color:C.amber,borderColor:C.amber+"30"}}>Suspend</button>
+                        :<button onClick={()=>reinstate(u.id)} style={{...btn("ghost"),fontSize:11,padding:"4px 8px",color:C.green,borderColor:C.green+"30"}}>Reinstate</button>}
+                      <button onClick={()=>setConfirm({type:"delete",user:u})} style={{...btn("ghost"),fontSize:11,padding:"4px 8px",color:C.red,borderColor:C.red+"30"}}>Delete</button>
+                    </div>
+                  </td>
+                </tr>
+              );
+            })}
           </tbody>
         </table>
         <div style={{padding:"9px 14px",borderTop:`1px solid #FAFAFA`,fontSize:11,color:C.muted}}>{shown.length} of {users.length} users</div>
       </div>
 
       {/* Invite / Add modal */}
-      {modal==="add"&&<InviteModal onClose={()=>setModal(null)} onInvite={(email,name,role,dept,pw)=>invite(email,name,role,dept,pw)}/>}
-      {modal?.edit&&<EditUserModal user={modal.edit} onClose={()=>setModal(null)} onSave={updateUser}/>}
+      {modal==="add"&&<InviteModal onClose={()=>setModal(null)} onInvite={(email,name,role,dept,pw,adminRoles)=>invite(email,name,role,dept,pw,adminRoles)}/>}
+      {modal?.edit&&<EditUserModal user={modal.edit} onClose={()=>setModal(null)} onSave={updateUserLocal}/>}
 
       {/* Confirm modal */}
       {confirm&&(
@@ -1269,26 +1369,38 @@ function UserMgmt({ctx}){
 }
 
 function InviteModal({onClose,onInvite}){
-  const [email,    setEmail]   = useState("");
-  const [name,     setName]    = useState("");
-  const [role,     setRole]    = useState("employee");
-  const [dept,     setDept]    = useState("Finance");
-  const [password, setPass]    = useState("");
-  const [confirm,  setConfirm] = useState("");
-  const [err,      setErr]     = useState("");
+  const [email,      setEmail]     = useState("");
+  const [name,       setName]      = useState("");
+  const [roleType,   setRoleType]  = useState("staff"); // "staff" | "admin"
+  const [staffRole,  setStaffRole] = useState("employee");
+  const [adminRoles, setAdminRoles]= useState(["facility_admin"]);
+  const [dept,       setDept]      = useState("Finance");
+  const [password,   setPass]      = useState("");
+  const [confirm,    setConfirm]   = useState("");
+  const [err,        setErr]       = useState("");
+
+  const toggleAdminRole = (r) => {
+    setAdminRoles(prev =>
+      prev.includes(r)
+        ? prev.filter(x=>x!==r)
+        : [...prev, r]
+    );
+  };
 
   const go=()=>{
     setErr("");
-    if(!email) return setErr("Email is required.");
-    if(!name)  return setErr("Full name is required.");
+    if(!email)  return setErr("Email is required.");
+    if(!name)   return setErr("Full name is required.");
     if(password.length < 8) return setErr("Temporary password must be at least 8 characters.");
     if(password !== confirm) return setErr("Passwords do not match.");
-    onInvite(email, name, role, dept, password);
+    if(roleType==="admin" && adminRoles.length===0) return setErr("Select at least one admin role.");
+    const primaryRole = roleType==="admin" ? adminRoles[0] : staffRole;
+    onInvite(email, name, primaryRole, dept, password, roleType==="admin" ? adminRoles : []);
     onClose();
   };
 
   return (
-    <Modal title="Invite New User" sub="User will receive an email to access the platform" onClose={onClose} w={500}>
+    <Modal title="Invite New User" sub="User will receive an email to access the platform" onClose={onClose} w={520}>
       <div style={{display:"flex",flexDirection:"column",gap:14}}>
         <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:14}}>
           <div style={{gridColumn:"1/-1"}}>
@@ -1299,18 +1411,60 @@ function InviteModal({onClose,onInvite}){
             <label style={LBL}>Email Address</label>
             <input value={email} onChange={e=>setEmail(e.target.value)} style={inp()} placeholder="user@africaprudential.com"/>
           </div>
+        </div>
+
+        {/* Role type switcher */}
+        <div>
+          <label style={LBL}>Account Type</label>
+          <div style={{display:"flex",gap:8}}>
+            {[{v:"staff",l:"Staff User"},{v:"admin",l:"Admin User"}].map(opt=>(
+              <button key={opt.v} onClick={()=>setRoleType(opt.v)} style={{
+                flex:1,padding:"8px 0",borderRadius:6,border:`1.5px solid ${roleType===opt.v?C.brand:C.border}`,
+                background:roleType===opt.v?C.brandLt:"#fff",color:roleType===opt.v?C.brand:C.muted,
+                fontSize:12,fontWeight:700,cursor:"pointer",fontFamily:"inherit"}}>
+                {opt.l}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {roleType==="staff" ? (
           <div>
-            <label style={LBL}>Role</label>
-            <select value={role} onChange={e=>setRole(e.target.value)} style={inp()}>
-              {USER_ROLES.map(r=><option key={r} value={r}>{r.replace("_"," ")}</option>)}
+            <label style={LBL}>Staff Role</label>
+            <select value={staffRole} onChange={e=>setStaffRole(e.target.value)} style={inp()}>
+              {STAFF_ROLES.map(r=><option key={r} value={r}>{r.replace(/_/g," ")}</option>)}
             </select>
           </div>
+        ) : (
+          <div>
+            <label style={LBL}>Admin Roles (select all that apply)</label>
+            <div style={{display:"flex",flexDirection:"column",gap:8,padding:"10px 12px",borderRadius:6,border:`1px solid ${C.border}`,background:"#FAFAFA"}}>
+              {ADMIN_ROLE_TYPES.map(r=>{
+                const m = ADMIN_ROLE_META[r];
+                const checked = adminRoles.includes(r);
+                return (
+                  <label key={r} style={{display:"flex",alignItems:"center",gap:10,cursor:"pointer"}}>
+                    <input type="checkbox" checked={checked} onChange={()=>toggleAdminRole(r)}
+                      style={{width:14,height:14,accentColor:m.color,cursor:"pointer"}}/>
+                    <Chip label={m.label} color={m.color} bg={m.bg}/>
+                    <span style={{fontSize:12,color:C.muted}}>
+                      {r==="super_admin"?"Full platform access" : r==="facility_admin"?"Facilities & operations" : "Change management & IT governance"}
+                    </span>
+                  </label>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:14}}>
           <div>
             <label style={LBL}>Department</label>
             <select value={dept} onChange={e=>setDept(e.target.value)} style={inp()}>
               {["Finance","HR","IT","Operations","Legal","Facilities","Compliance"].map(d=><option key={d} value={d}>{d}</option>)}
             </select>
           </div>
+          <div/>
           <div>
             <label style={LBL}>Temporary Password</label>
             <input type="password" value={password} onChange={e=>setPass(e.target.value)} style={inp()} placeholder="Min 8 characters"/>
@@ -1320,6 +1474,7 @@ function InviteModal({onClose,onInvite}){
             <input type="password" value={confirm} onChange={e=>setConfirm(e.target.value)} style={inp()} placeholder="Re-enter password"/>
           </div>
         </div>
+
         {err && <div style={{padding:"9px 13px",borderRadius:7,background:C.redBg,border:`1px solid ${C.red}30`,fontSize:13,color:C.red,fontWeight:500}}>{err}</div>}
         <div style={{padding:"10px 13px",borderRadius:7,background:C.blueBg,border:`1px solid ${C.blue}30`,fontSize:12,color:C.blue,fontWeight:600}}>
           📧 User will receive an invite email. They can log in immediately with the temporary password you set.
@@ -1334,25 +1489,95 @@ function InviteModal({onClose,onInvite}){
 }
 
 function EditUserModal({user,onClose,onSave}){
-  const [d,setD]=useState({name:user.name,role:user.role,dept:user.dept});
+  const isAdminUser = ADMIN_ROLE_TYPES.includes(user.role) || user.role==="admin";
+  const initialAdminRoles = isAdminUser ? getAdminRoles(user) : [];
+
+  const [name,       setName]      = useState(user.name);
+  const [dept,       setDept]      = useState(user.dept);
+  const [staffRole,  setStaffRole] = useState(isAdminUser ? "employee" : user.role);
+  const [adminRoles, setAdminRoles]= useState(initialAdminRoles.length ? initialAdminRoles : ["facility_admin"]);
+  const [isAdmin,    setIsAdmin]   = useState(isAdminUser);
+
+  const toggleAdminRole = (r) => {
+    setAdminRoles(prev =>
+      prev.includes(r) ? prev.filter(x=>x!==r) : [...prev, r]
+    );
+  };
+
+  const save=()=>{
+    const primaryRole = isAdmin ? adminRoles[0] : staffRole;
+    const updates = {
+      name,
+      dept,
+      role: primaryRole,
+      admin_roles: isAdmin ? adminRoles : [],
+    };
+    onSave(user.id, updates);
+    onClose();
+  };
+
   return (
-    <Modal title="Edit User" sub={user.email} onClose={onClose} w={460}>
+    <Modal title="Edit User" sub={user.email} onClose={onClose} w={480}>
       <div style={{display:"flex",flexDirection:"column",gap:14}}>
-        <div><label style={LBL}>Full Name</label><input value={d.name} onChange={e=>setD(p=>({...p,name:e.target.value}))} style={inp()}/></div>
-        <div><label style={LBL}>Role</label>
-          <select value={d.role} onChange={e=>setD(p=>({...p,role:e.target.value}))} style={inp()}>
-            {USER_ROLES.map(r=><option key={r} value={r}>{r.replace("_"," ")}</option>)}
-          </select>
+        <div>
+          <label style={LBL}>Full Name</label>
+          <input value={name} onChange={e=>setName(e.target.value)} style={inp()}/>
         </div>
-        <div><label style={LBL}>Department</label>
-          <select value={d.dept} onChange={e=>setD(p=>({...p,dept:e.target.value}))} style={inp()}>
+
+        {/* Account type switcher */}
+        <div>
+          <label style={LBL}>Account Type</label>
+          <div style={{display:"flex",gap:8}}>
+            {[{v:false,l:"Staff User"},{v:true,l:"Admin User"}].map(opt=>(
+              <button key={String(opt.v)} onClick={()=>setIsAdmin(opt.v)} style={{
+                flex:1,padding:"7px 0",borderRadius:6,border:`1.5px solid ${isAdmin===opt.v?C.brand:C.border}`,
+                background:isAdmin===opt.v?C.brandLt:"#fff",color:isAdmin===opt.v?C.brand:C.muted,
+                fontSize:12,fontWeight:700,cursor:"pointer",fontFamily:"inherit"}}>
+                {opt.l}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {isAdmin ? (
+          <div>
+            <label style={LBL}>Admin Roles</label>
+            <div style={{display:"flex",flexDirection:"column",gap:8,padding:"10px 12px",borderRadius:6,border:`1px solid ${C.border}`,background:"#FAFAFA"}}>
+              {ADMIN_ROLE_TYPES.map(r=>{
+                const m = ADMIN_ROLE_META[r];
+                const checked = adminRoles.includes(r);
+                return (
+                  <label key={r} style={{display:"flex",alignItems:"center",gap:10,cursor:"pointer"}}>
+                    <input type="checkbox" checked={checked} onChange={()=>toggleAdminRole(r)}
+                      style={{width:14,height:14,accentColor:m.color,cursor:"pointer"}}/>
+                    <Chip label={m.label} color={m.color} bg={m.bg}/>
+                    <span style={{fontSize:12,color:C.muted}}>
+                      {r==="super_admin"?"Full platform access" : r==="facility_admin"?"Facilities & operations" : "Change management & IT governance"}
+                    </span>
+                  </label>
+                );
+              })}
+            </div>
+          </div>
+        ) : (
+          <div>
+            <label style={LBL}>Staff Role</label>
+            <select value={staffRole} onChange={e=>setStaffRole(e.target.value)} style={inp()}>
+              {STAFF_ROLES.map(r=><option key={r} value={r}>{r.replace(/_/g," ")}</option>)}
+            </select>
+          </div>
+        )}
+
+        <div>
+          <label style={LBL}>Department</label>
+          <select value={dept} onChange={e=>setDept(e.target.value)} style={inp()}>
             {["Finance","HR","IT","Operations","Legal","Facilities","Compliance"].map(dep=><option key={dep} value={dep}>{dep}</option>)}
           </select>
         </div>
       </div>
       <div style={{display:"flex",justifyContent:"flex-end",gap:8,marginTop:18,paddingTop:16,borderTop:`1px solid ${C.border}`}}>
         <button onClick={onClose} style={btn("ghost")}>Cancel</button>
-        <button onClick={()=>{onSave(user.id,d);onClose()}} style={btn("primary")}>Save Changes</button>
+        <button onClick={save} style={btn("primary")}>Save Changes</button>
       </div>
     </Modal>
   );
