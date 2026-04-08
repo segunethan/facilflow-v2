@@ -1,5 +1,5 @@
 import { supabase } from "./lib/supabase.js";
-import { fetchUsers, updateUser, deleteUser, fetchVehicles, createVehicle, updateVehicle, fetchDrivers, createDriver, updateDriver, fetchInventory, createInventoryItem, updateInventoryItem, fetchRequests, updateRequest, fetchCRs, updateCR, fetchAuditLog, addAuditEntry, fetchChangeRoles, fetchUserChangeRoles, assignChangeRole, removeChangeRole, fetchApprovalLevels, saveApprovalLevel, deleteApprovalLevel, fetchTenantConfig, saveTenantConfig } from "./lib/supabase.js";
+import { fetchUsers, updateUser, deleteUser, fetchVehicles, createVehicle, updateVehicle, fetchDrivers, createDriver, updateDriver, fetchInventory, createInventoryItem, updateInventoryItem, fetchRequests, updateRequest, fetchCRs, updateCR, fetchAuditLog, addAuditEntry, fetchChangeRoles, fetchUserChangeRoles, assignChangeRole, removeChangeRole, fetchApprovalLevels, saveApprovalLevel, deleteApprovalLevel, fetchTenantConfig, saveTenantConfig, fetchVehicleDocs, upsertVehicleDoc, uploadVehicleDoc, fetchSubscriptions, createSubscription, updateSubscription, uploadSubInvoice } from "./lib/supabase.js";
 import React, { useState, useMemo, useCallback, useEffect } from "react";
 
 /* =========================================================
@@ -140,6 +140,34 @@ const DRIVER_STATUSES = [
   {v:"resigned",   l:"Resigned",    color:C.muted, bg:"#F8FAFC"},
 ];
 
+const DOC_TYPES = ["Insurance","Road Worthiness","Vehicle License"];
+
+const docStatus = (expiryDate) => {
+  if (!expiryDate) return {l:"No Record", color:C.muted, bg:"#F8FAFC"};
+  const days = Math.ceil((new Date(expiryDate) - new Date()) / 86400000);
+  if (days < 0)  return {l:"Expired",       color:C.red,   bg:C.redBg,   days};
+  if (days <= 7) return {l:"Expiring Soon", color:C.amber, bg:C.amberBg, days};
+  return              {l:"Valid",          color:C.green, bg:C.greenBg, days};
+};
+
+const worstDocStatus = (docs=[]) => {
+  const statuses = DOC_TYPES.map(t => {
+    const d = docs.find(x=>x.document_type===t);
+    return docStatus(d?.expiry_date);
+  });
+  if (statuses.some(s=>s.l==="Expired"))       return {l:"Expired",       color:C.red,   bg:C.redBg};
+  if (statuses.some(s=>s.l==="Expiring Soon")) return {l:"Expiring Soon", color:C.amber, bg:C.amberBg};
+  if (statuses.some(s=>s.l==="Valid"))         return {l:"Valid",          color:C.green, bg:C.greenBg};
+  return {l:"No Docs", color:C.muted, bg:"#F8FAFC"};
+};
+
+const SUB_CATEGORIES = ["Design","Hosting","Email","Communication","Security","Analytics","Development","Productivity","Other"];
+const SUB_STATUSES   = [
+  {v:"active",    l:"Active",    color:C.green, bg:C.greenBg},
+  {v:"expired",   l:"Expired",   color:C.red,   bg:C.redBg},
+  {v:"cancelled", l:"Cancelled", color:C.muted, bg:"#F8FAFC"},
+];
+
 const STAFF_ROLES = ["employee","manager","resource_team"];
 const ADMIN_ROLE_TYPES = ["super_admin","facility_admin","it_admin"];
 const USER_ROLES = [...STAFF_ROLES, ...ADMIN_ROLE_TYPES];
@@ -179,7 +207,8 @@ const dsm   = v => DRIVER_STATUSES.find(s=>s.v===v)||{l:v,color:C.muted,bg:"#F8F
 
 // DB → UI field normalizers (DB is snake_case, UI expects camelCase from original seed)
 const normCR  = cr => cr ? ({...cr, changeType:cr.change_type??cr.changeType, riskLevel:cr.risk_level??cr.riskLevel, deployDate:cr.deploy_date??cr.deployDate, deployStart:cr.deploy_start??cr.deployStart, deployEnd:cr.deploy_end??cr.deployEnd, isEmergency:cr.is_emergency??cr.isEmergency, systemName:cr.system_name??cr.systemName, createdAt:cr.created_at??cr.createdAt, updatedAt:cr.updated_at??cr.updatedAt }) : cr;
-const normVeh = v  => v  ? ({...v,  driverId:v.driver_id??v.driverId, lastUpdated:v.updated_at??v.lastUpdated, createdAt:v.created_at??v.createdAt }) : v;
+const normVeh = v  => v  ? ({...v,  driverId:v.driver_id??v.driverId, lastUpdated:v.updated_at??v.lastUpdated, createdAt:v.created_at??v.createdAt, ownershipType:v.ownership_type??v.ownershipType, companyName:v.company_name??v.companyName, coOwnerName:v.co_owner_name??v.coOwnerName }) : v;
+const normSub  = s  => s  ? ({...s,  renewalDate:s.renewal_date??s.renewalDate, billingCycle:s.billing_cycle??s.billingCycle, prevCost:s.prev_cost??s.prevCost, attachmentUrl:s.attachment_url??s.attachmentUrl, assignedOwner:s.assigned_owner??s.assignedOwner, lastUpdated:s.updated_at??s.lastUpdated, createdAt:s.created_at??s.createdAt }) : s;
 const normDrv = d  => d  ? ({...d,  vehicleId:d.vehicle_id??d.vehicleId, lastUpdated:d.updated_at??d.lastUpdated, createdAt:d.created_at??d.createdAt }) : d;
 const normInv = i  => i  ? ({...i,  desc:i.description??i.desc, lastUpdated:i.updated_at??i.lastUpdated, createdAt:i.created_at??i.createdAt }) : i;
 const normAudit = a => a ? ({...a,  at:a.created_at??a.at, by:a.performed_by??a.by }) : a;
@@ -303,6 +332,9 @@ const NAV = [
     {k:"cr_policy",       l:"CR Policy",        icon:"⚙"},
     {k:"change_config",   l:"Change Config",    icon:"🔧"},
   ]},
+  {group:"IT Management", roles:["super_admin","it_admin"], items:[
+    {k:"it_subscriptions",l:"IT Subscriptions", icon:"💳"},
+  ]},
   {group:"System", roles:["super_admin"], items:[
     {k:"notifications",l:"Notifications",  icon:"🔔"},
     {k:"audit",        l:"Audit Log",       icon:"📋"},
@@ -325,6 +357,8 @@ export default function AdminApp({ currentUser }){
   const [userCRoles,    setUserCRoles]    = useState([]);
   const [approvalLevels,setApprovalLevels]= useState([]);
   const [tenantConfig,  setTenantConfig]  = useState(null);
+  const [vehicleDocs, setVehicleDocs] = useState([]);
+  const [subscriptions, setSubs]      = useState([]);
   const [toast,     setToast]    = useState(null);
   const [loading,   setLoading]  = useState(true);
 
@@ -343,7 +377,9 @@ export default function AdminApp({ currentUser }){
       fetchRequests(tid),
       fetchCRs(tid),
       fetchAuditLog(tid),
-    ]).then(([u,v,d,inv,reqs,cr,al])=>{
+      fetchVehicleDocs(tid),
+      fetchSubscriptions(tid),
+    ]).then(([u,v,d,inv,reqs,cr,al,vdocs,subs])=>{
       setUsers(u||[]);
       setVehicles((v||[]).map(normVeh));
       setDrivers((d||[]).map(normDrv));
@@ -351,6 +387,8 @@ export default function AdminApp({ currentUser }){
       setRequests(reqs||[]);
       setCrs((cr||[]).map(normCR));
       setAudit((al||[]).map(normAudit));
+      setVehicleDocs(vdocs||[]);
+      setSubs((subs||[]).map(normSub));
     }).catch(console.error)
     .finally(()=>setLoading(false));
 
@@ -410,6 +448,8 @@ export default function AdminApp({ currentUser }){
     userCRoles, setUserCRoles,
     approvalLevels, setApprovalLevels,
     tenantConfig, setTenantConfig,
+    vehicleDocs, setVehicleDocs,
+    subscriptions, setSubs,
   };
 
   return (
@@ -487,6 +527,7 @@ export default function AdminApp({ currentUser }){
           {page==="change_requests" && (hasAdminAccess(me,["super_admin","it_admin"])       ? <CRAdmin      ctx={ctx}/> : <AccessDenied/>)}
           {page==="cr_policy"       && (hasAdminAccess(me,["super_admin","it_admin"])       ? <CRPolicy     ctx={ctx}/> : <AccessDenied/>)}
           {page==="change_config"   && (hasAdminAccess(me,["super_admin","it_admin"])       ? <ChangeConfig ctx={ctx}/> : <AccessDenied/>)}
+          {page==="it_subscriptions" && (hasAdminAccess(me,["super_admin","it_admin"])       ? <ITSubscriptions ctx={ctx}/> : <AccessDenied/>)}
           {page==="notifications"   && (hasAdminAccess(me,["super_admin"])                  ? <NotifPolicy  ctx={ctx}/> : <AccessDenied/>)}
           {page==="audit"           && (hasAdminAccess(me,["super_admin"])                  ? <AuditLog     ctx={ctx}/> : <AccessDenied/>)}
         </main>
@@ -1587,105 +1628,252 @@ function EditUserModal({user,onClose,onSave}){
 // FLEET MANAGEMENT
 // ══════════════════════════════════════════════════════════════
 function FleetMgmt({ctx}){
-  const {vehicles,setVehicles,drivers,addAudit,flash,tid}=ctx;
-  const [f,setF]     = useState({});
-  const [modal,setModal]=useState(null);
+  const {vehicles,setVehicles,vehicleDocs,setVehicleDocs,drivers,addAudit,flash,tid}=ctx;
+  const [f,setF]        = useState({});
+  const [modal,setModal] = useState(null);
+  const [detail,setDetail] = useState(null);
 
-  const shown=vehicles.filter(v=>{
-    if(f.status&&v.status!==f.status)return false;
-    if(f.q){const q=f.q.toLowerCase();if(!v.model.toLowerCase().includes(q)&&!v.plate.toLowerCase().includes(q))return false;}
+  const shown = vehicles.filter(v=>{
+    if(f.status && v.status!==f.status) return false;
+    if(f.ownership && v.ownershipType!==f.ownership) return false;
+    if(f.coOwner){const q=f.coOwner.toLowerCase();if(!(v.coOwnerName||"").toLowerCase().includes(q)) return false;}
+    if(f.q){const q=f.q.toLowerCase();if(!v.model.toLowerCase().includes(q)&&!v.plate.toLowerCase().includes(q)) return false;}
     return true;
   });
 
   const updateStatus=async(id,status)=>{
     try{
       await updateVehicle(id,{status});
-      setVehicles(p=>p.map(v=>v.id!==id?v:{...v,status}));
+      setVehicles(p=>p.map(v=>v.id!==id?v:normVeh({...v,status,updated_at:now()})));
       addAudit("VEHICLE_STATUS",id,`Status changed to ${vsm(status).l}`);
       flash(`Vehicle status updated to ${vsm(status).l}`);
-    }catch(e){flash(e.message,"error");}
-  };
-
-  const addVehicle=async d=>{
-    try{
-      const rec={...d,id:genId("CAR"),tenant_id:tid,driver_id:null};
-      const saved=await createVehicle(rec);
-      setVehicles(p=>[...p,saved]);
-      addAudit("VEHICLE_ADDED",saved.id,`${d.model} added`);flash("Vehicle added");
     }catch(e){flash(e.message,"error");}
   };
 
   const assignDriver=async(vId,dId)=>{
     try{
       await updateVehicle(vId,{driver_id:dId||null});
-      setVehicles(p=>p.map(v=>v.id!==vId?v:{...v,driver_id:dId||null}));
+      setVehicles(p=>p.map(v=>v.id!==vId?v:normVeh({...v,driver_id:dId||null})));
       flash("Driver assignment updated");
     }catch(e){flash(e.message,"error");}
   };
 
+  const saveVehicle=async(data,existing)=>{
+    try{
+      const rec={
+        plate:data.plate, model:data.model, year:data.year, color:data.color,
+        ownership_type:data.ownershipType||"Company",
+        company_name:data.companyName||"",
+        co_owner_name:data.ownershipType==="Joint"?data.coOwnerName||"":null,
+      };
+      if(existing){
+        const saved=await updateVehicle(existing.id,rec);
+        setVehicles(p=>p.map(v=>v.id!==existing.id?v:normVeh(saved)));
+        addAudit("VEHICLE_UPDATED",existing.id,`${data.model} updated`);flash("Vehicle updated");
+      } else {
+        const saved=await createVehicle({...rec,id:genId("CAR"),tenant_id:tid,driver_id:null});
+        setVehicles(p=>[...p,normVeh(saved)]);
+        addAudit("VEHICLE_ADDED",saved.id,`${data.model} added`);flash("Vehicle added");
+      }
+    }catch(e){flash(e.message,"error");}
+  };
+
+  const saveDoc=async(vehicleId,docType,expiryDate,attachmentUrl)=>{
+    try{
+      const saved=await upsertVehicleDoc({vehicle_id:vehicleId,document_type:docType,expiry_date:expiryDate,attachment_url:attachmentUrl||null,tenant_id:tid});
+      setVehicleDocs(p=>{const out=p.filter(d=>!(d.vehicle_id===vehicleId&&d.document_type===docType));return [...out,saved];});
+      addAudit("VEHICLE_DOC_UPDATED",vehicleId,`${docType} document updated`);
+      flash(`${docType} document saved`);
+    }catch(e){flash(e.message,"error");}
+  };
+
+  const uploadDoc=async(vehicleId,docType,file,expiryDate)=>{
+    try{
+      flash("Uploading…");
+      const {publicUrl}=await uploadVehicleDoc(vehicleId,file);
+      await saveDoc(vehicleId,docType,expiryDate,publicUrl);
+    }catch(e){flash(e.message,"error");}
+  };
+
+  // Compliance alert banner
+  const allDocs = vehicleDocs;
+  const expiringVehicles = vehicles.filter(v=>{
+    const vd=allDocs.filter(d=>d.vehicle_id===v.id);
+    const w=worstDocStatus(vd);
+    return w.l==="Expired"||w.l==="Expiring Soon";
+  });
+
   return (
     <div>
-      <PageTitle title="Fleet Management" sub="Vehicles, status and driver assignments"
+      <PageTitle title="Fleet Management" sub="Vehicles, compliance documents and driver assignments"
         action={<button onClick={()=>setModal("add")} style={btn("primary")}>+ Add Vehicle</button>}/>
+
+      {expiringVehicles.length>0&&(
+        <div style={{padding:"10px 16px",borderRadius:8,background:C.amberBg,border:`1px solid ${C.amber}40`,marginBottom:14,fontSize:12,color:C.amber,fontWeight:600}}>
+          ⚠ {expiringVehicles.length} vehicle(s) have expired or expiring compliance documents — review below.
+        </div>
+      )}
+
       <Filters values={f} onChange={setF} fields={[
-        {k:"q",     label:"Search",w:180,ph:"Plate or model…"},
-        {k:"status",label:"Status",type:"select",w:170,opts:VEHICLE_STATUSES.map(s=>({v:s.v,l:s.l}))},
+        {k:"q",        label:"Search",         w:180, ph:"Plate or model…"},
+        {k:"status",   label:"Status",          type:"select",w:160, opts:VEHICLE_STATUSES.map(s=>({v:s.v,l:s.l}))},
+        {k:"ownership",label:"Ownership Type",  type:"select",w:150, opts:[{v:"Company",l:"Company"},{v:"Joint",l:"Joint"}]},
+        {k:"coOwner",  label:"Co-owner Search", w:160, ph:"Co-owner name…"},
       ]}/>
+
       <div style={card(0)}>
         <table style={{width:"100%",borderCollapse:"collapse"}}>
-          <TH cols={["Plate","Model","Year","Colour","Status","Assigned Driver","Last Updated",""]}/>
+          <TH cols={["Plate","Model","Year","Colour","Assigned Owner","Docs","Status","Driver",""]}/>
           <tbody>
-            {shown.length===0?<tr><td colSpan={8}><Empty icon="🚗" title="No vehicles found"/></td></tr>
-            :shown.map((v,i)=>{
-              const drv=drivers.find(d=>d.id===v.driverId);
-              return (
-                <tr key={v.id} style={{borderBottom:i<shown.length-1?`1px solid #FAFAFA`:"none"}}>
-                  <td style={{padding:"11px 14px",fontSize:12,fontWeight:700,color:C.ink}}>{v.plate}</td>
-                  <td style={{padding:"11px 14px",fontSize:13,color:C.ink}}>{v.model}</td>
-                  <td style={{padding:"11px 14px",fontSize:12,color:C.muted}}>{v.year}</td>
-                  <td style={{padding:"11px 14px",fontSize:12,color:C.muted}}>{v.color}</td>
-                  <td style={{padding:"11px 14px"}}>
-                    <select value={v.status} onChange={e=>updateStatus(v.id,e.target.value)}
-                      style={{border:`1px solid ${C.border}`,borderRadius:6,padding:"4px 8px",fontSize:11,fontWeight:600,cursor:"pointer",fontFamily:"inherit",background:"#fff",color:vsm(v.status).color}}>
-                      {VEHICLE_STATUSES.map(s=><option key={s.v} value={s.v}>{s.l}</option>)}
-                    </select>
-                  </td>
-                  <td style={{padding:"11px 14px",fontSize:12,color:C.muted}}>
-                    <select value={v.driverId||""} onChange={e=>assignDriver(v.id,e.target.value)}
-                      style={{border:`1px solid ${C.border}`,borderRadius:6,padding:"4px 8px",fontSize:11,cursor:"pointer",fontFamily:"inherit",background:"#fff",minWidth:130}}>
-                      <option value="">— Unassigned —</option>
-                      {drivers.filter(d=>d.status==="available"||d.id===v.driverId).map(d=><option key={d.id} value={d.id}>{d.name}</option>)}
-                    </select>
-                  </td>
-                  <td style={{padding:"11px 14px",fontSize:11,color:C.muted,whiteSpace:"nowrap"}}>{fmtD(v.lastUpdated)}</td>
-                  <td style={{padding:"11px 14px"}}><button onClick={()=>setModal({edit:v})} style={{...btn("ghost"),fontSize:11,padding:"4px 8px"}}>Edit</button></td>
-                </tr>
-              );
-            })}
+            {shown.length===0
+              ?<tr><td colSpan={9}><Empty icon="🚗" title="No vehicles found"/></td></tr>
+              :shown.map((v,i)=>{
+                const drv=drivers.find(d=>d.id===v.driverId);
+                const vd=allDocs.filter(d=>d.vehicle_id===v.id);
+                const ws=worstDocStatus(vd);
+                const owner=v.ownershipType==="Joint"&&v.coOwnerName
+                  ?`${v.companyName||"—"} / ${v.coOwnerName}`
+                  :(v.companyName||"—");
+                const rowBg = ws.l==="Expired"?`${C.red}07`:ws.l==="Expiring Soon"?`${C.amber}07`:"transparent";
+                return (
+                  <tr key={v.id} style={{borderBottom:i<shown.length-1?`1px solid #FAFAFA`:"none",background:rowBg}}>
+                    <td style={{padding:"11px 14px",fontSize:12,fontWeight:700,color:C.ink}}>{v.plate}</td>
+                    <td style={{padding:"11px 14px",fontSize:13,color:C.ink}}>{v.model}</td>
+                    <td style={{padding:"11px 14px",fontSize:12,color:C.muted}}>{v.year}</td>
+                    <td style={{padding:"11px 14px",fontSize:12,color:C.muted}}>{v.color}</td>
+                    <td style={{padding:"11px 14px",fontSize:12,color:C.ink2}}>{owner}</td>
+                    <td style={{padding:"11px 14px"}}>
+                      <Chip label={ws.l} color={ws.color} bg={ws.bg}/>
+                    </td>
+                    <td style={{padding:"11px 14px"}}>
+                      <select value={v.status} onChange={e=>updateStatus(v.id,e.target.value)}
+                        style={{border:`1px solid ${C.border}`,borderRadius:6,padding:"4px 8px",fontSize:11,fontWeight:600,cursor:"pointer",fontFamily:"inherit",background:"#fff",color:vsm(v.status).color}}>
+                        {VEHICLE_STATUSES.map(s=><option key={s.v} value={s.v}>{s.l}</option>)}
+                      </select>
+                    </td>
+                    <td style={{padding:"11px 14px",fontSize:12,color:C.muted}}>
+                      <select value={v.driverId||""} onChange={e=>assignDriver(v.id,e.target.value)}
+                        style={{border:`1px solid ${C.border}`,borderRadius:6,padding:"4px 8px",fontSize:11,cursor:"pointer",fontFamily:"inherit",background:"#fff",minWidth:130}}>
+                        <option value="">— Unassigned —</option>
+                        {drivers.filter(d=>d.status==="available"||d.id===v.driverId).map(d=><option key={d.id} value={d.id}>{d.name}</option>)}
+                      </select>
+                    </td>
+                    <td style={{padding:"11px 14px"}}>
+                      <div style={{display:"flex",gap:5}}>
+                        <button onClick={()=>setDetail(v)} style={{...btn("ghost"),fontSize:11,padding:"4px 8px"}}>Docs</button>
+                        <button onClick={()=>setModal({edit:v})} style={{...btn("ghost"),fontSize:11,padding:"4px 8px"}}>Edit</button>
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
           </tbody>
         </table>
       </div>
-      {modal==="add"&&<VehicleModal onClose={()=>setModal(null)} onSave={addVehicle}/>}
-      {modal?.edit&&<VehicleModal vehicle={modal.edit} onClose={()=>setModal(null)} onSave={d=>{setVehicles(p=>p.map(v=>v.id!==modal.edit.id?v:{...v,...d,lastUpdated:now()}));flash("Vehicle updated");}}/>}
+
+      {modal==="add"&&<VehicleModal onClose={()=>setModal(null)} onSave={d=>saveVehicle(d,null)}/>}
+      {modal?.edit&&<VehicleModal vehicle={modal.edit} onClose={()=>setModal(null)} onSave={d=>saveVehicle(d,modal.edit)}/>}
+      {detail&&<VehicleDocsModal vehicle={detail} docs={allDocs.filter(d=>d.vehicle_id===detail.id)} onClose={()=>setDetail(null)} onSaveDoc={saveDoc} onUploadDoc={uploadDoc}/>}
     </div>
   );
 }
 
 function VehicleModal({vehicle,onClose,onSave}){
-  const [d,setD]=useState(vehicle?{plate:vehicle.plate,model:vehicle.model,year:vehicle.year,color:vehicle.color}:{plate:"",model:"",year:new Date().getFullYear(),color:"White"});
+  const [d,setD]=useState(vehicle
+    ?{plate:vehicle.plate,model:vehicle.model,year:vehicle.year,color:vehicle.color,ownershipType:vehicle.ownershipType||"Company",companyName:vehicle.companyName||"",coOwnerName:vehicle.coOwnerName||""}
+    :{plate:"",model:"",year:new Date().getFullYear(),color:"White",ownershipType:"Company",companyName:"Africa Prudential",coOwnerName:""});
   return (
-    <Modal title={vehicle?"Edit Vehicle":"Add Vehicle"} onClose={onClose} w={480}>
+    <Modal title={vehicle?"Edit Vehicle":"Add Vehicle"} onClose={onClose} w={520}>
       <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:14}}>
         <div style={{gridColumn:"1/-1"}}><label style={LBL}>Plate Number</label><input value={d.plate} onChange={e=>setD(p=>({...p,plate:e.target.value}))} style={inp()} placeholder="e.g. AAA-001BE"/></div>
         <div><label style={LBL}>Model</label><input value={d.model} onChange={e=>setD(p=>({...p,model:e.target.value}))} style={inp()} placeholder="e.g. Toyota Camry"/></div>
         <div><label style={LBL}>Year</label><input type="number" value={d.year} onChange={e=>setD(p=>({...p,year:+e.target.value}))} style={inp()}/></div>
         <div><label style={LBL}>Colour</label><input value={d.color} onChange={e=>setD(p=>({...p,color:e.target.value}))} style={inp()} placeholder="e.g. Silver"/></div>
+        <div>
+          <label style={LBL}>Ownership Type</label>
+          <select value={d.ownershipType} onChange={e=>setD(p=>({...p,ownershipType:e.target.value}))} style={inp()}>
+            <option value="Company">Company</option>
+            <option value="Joint">Joint</option>
+          </select>
+        </div>
+        <div><label style={LBL}>Company Name</label><input value={d.companyName} onChange={e=>setD(p=>({...p,companyName:e.target.value}))} style={inp()} placeholder="e.g. Africa Prudential"/></div>
+        {d.ownershipType==="Joint"&&(
+          <div style={{gridColumn:"1/-1"}}><label style={LBL}>Co-owner Name</label><input value={d.coOwnerName} onChange={e=>setD(p=>({...p,coOwnerName:e.target.value}))} style={inp()} placeholder="e.g. Joseph Adeyemi"/></div>
+        )}
       </div>
       <div style={{display:"flex",justifyContent:"flex-end",gap:8,marginTop:18,paddingTop:16,borderTop:`1px solid ${C.border}`}}>
         <button onClick={onClose} style={btn("ghost")}>Cancel</button>
-        <button onClick={()=>{if(!d.plate||!d.model)return;onSave(d);onClose()}} style={btn("primary")}>{vehicle?"Save Changes":"Add Vehicle"}</button>
+        <button onClick={()=>{if(!d.plate||!d.model)return;onSave(d);onClose();}} style={btn("primary")}>{vehicle?"Save Changes":"Add Vehicle"}</button>
       </div>
     </Modal>
+  );
+}
+
+function VehicleDocsModal({vehicle,docs,onClose,onSaveDoc,onUploadDoc}){
+  const owner = vehicle.ownershipType==="Joint"&&vehicle.coOwnerName
+    ?`${vehicle.companyName||"—"} / ${vehicle.coOwnerName}`
+    :(vehicle.companyName||"—");
+
+  return (
+    <Modal title={`${vehicle.plate} — ${vehicle.model}`} sub={`Compliance Documents · Owner: ${owner}`} onClose={onClose} w={740}>
+      <div style={{display:"flex",flexDirection:"column",gap:14}}>
+        {DOC_TYPES.map(docType=>(
+          <VehicleDocRow key={docType} docType={docType} vehicle={vehicle} doc={docs.find(d=>d.document_type===docType)||null} onSave={onSaveDoc} onUpload={onUploadDoc}/>
+        ))}
+      </div>
+    </Modal>
+  );
+}
+
+function VehicleDocRow({docType,vehicle,doc,onSave,onUpload}){
+  const [editing,setEditing] = useState(false);
+  const [expiry,setExpiry]   = useState(doc?.expiry_date||"");
+  const [file,setFile]       = useState(null);
+  const [saving,setSaving]   = useState(false);
+  const st = docStatus(doc?.expiry_date);
+
+  const submit = async () => {
+    if(!expiry) return;
+    setSaving(true);
+    try{
+      if(file) await onUpload(vehicle.id,docType,file,expiry);
+      else     await onSave(vehicle.id,docType,expiry,doc?.attachment_url||null);
+      setEditing(false); setFile(null);
+    }finally{setSaving(false);}
+  };
+
+  return (
+    <div style={{border:`1px solid ${C.border}`,borderRadius:8,overflow:"hidden"}}>
+      <div style={{display:"grid",gridTemplateColumns:"180px 140px 110px 100px 1fr auto",gap:0,alignItems:"center",padding:"10px 14px",background:st.l==="Expired"?C.redBg:st.l==="Expiring Soon"?C.amberBg:"#FAFAFA"}}>
+        <div style={{fontSize:13,fontWeight:700,color:C.ink}}>{docType}</div>
+        <div style={{fontSize:12,color:C.muted}}>{doc?.expiry_date?fmtSafe(doc.expiry_date+"T12:00:00"):"—"}</div>
+        <div style={{fontSize:12,color:C.muted}}>
+          {doc?.expiry_date?(st.days!==undefined?(st.days<0?`${Math.abs(st.days)}d overdue`:`${st.days}d left`):"—"):"—"}
+        </div>
+        <Chip label={st.l} color={st.color} bg={st.bg}/>
+        <div style={{fontSize:11,color:C.muted}}>
+          {doc?.attachment_url
+            ?<a href={doc.attachment_url} target="_blank" rel="noreferrer" style={{color:C.blue,textDecoration:"none",fontWeight:600}}>📎 View</a>
+            :"No attachment"}
+        </div>
+        <button onClick={()=>setEditing(e=>!e)} style={{...btn("ghost"),fontSize:11,padding:"4px 8px"}}>{editing?"Cancel":"Edit"}</button>
+      </div>
+      {editing&&(
+        <div style={{padding:"14px",borderTop:`1px solid ${C.border}`,background:"#fff",display:"grid",gridTemplateColumns:"1fr 1fr auto",gap:12,alignItems:"flex-end"}}>
+          <div>
+            <label style={LBL}>Expiry Date</label>
+            <input type="date" value={expiry} onChange={e=>setExpiry(e.target.value)} style={inp()}/>
+          </div>
+          <div>
+            <label style={LBL}>Attachment (optional)</label>
+            <input type="file" onChange={e=>setFile(e.target.files[0]||null)} style={{...inp(),padding:"5px 8px",fontSize:11,cursor:"pointer"}}/>
+          </div>
+          <button onClick={submit} disabled={saving||!expiry} style={{...btn("primary"),alignSelf:"flex-end"}}>
+            {saving?"Saving…":"Save"}
+          </button>
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -2871,6 +3059,190 @@ function NotifPolicy({ctx}){
         </Modal>
       )}
     </div>
+  );
+}
+
+// ══════════════════════════════════════════════════════════════
+// IT SUBSCRIPTIONS
+// ══════════════════════════════════════════════════════════════
+function ITSubscriptions({ctx}){
+  const {subscriptions,setSubs,addAudit,flash,tid,uid}=ctx;
+  const [f,setF]         = useState({});
+  const [modal,setModal] = useState(null);
+
+  const shown = subscriptions.filter(s=>{
+    if(f.status   && s.status!==f.status)     return false;
+    if(f.category && s.category!==f.category) return false;
+    if(f.vendor){const q=f.vendor.toLowerCase();if(!(s.vendor||"").toLowerCase().includes(q)) return false;}
+    if(f.renewal_from && s.renewalDate < f.renewal_from) return false;
+    if(f.renewal_to   && s.renewalDate > f.renewal_to)   return false;
+    if(f.q){const q=f.q.toLowerCase();if(!s.name.toLowerCase().includes(q)&&!(s.vendor||"").toLowerCase().includes(q)) return false;}
+    return true;
+  });
+
+  const expiringSoon = subscriptions.filter(s=>{
+    if(s.status!=="active") return false;
+    const days=Math.ceil((new Date(s.renewalDate)-new Date())/86400000);
+    return days>=0&&days<=7;
+  });
+
+  const saveSub = async(data,existing)=>{
+    try{
+      let attachmentUrl = existing?.attachmentUrl||null;
+      if(data.invoiceFile){
+        flash("Uploading invoice…");
+        const up = await uploadSubInvoice(existing?.id||genId("SUB"),data.invoiceFile);
+        attachmentUrl = up.publicUrl;
+      }
+      const rec={
+        name:data.name, vendor:data.vendor, category:data.category,
+        renewal_date:data.renewalDate, billing_cycle:data.billingCycle,
+        cost:parseFloat(data.cost)||0,
+        prev_cost:data.prevCost?parseFloat(data.prevCost):null,
+        status:data.status, notes:data.notes||"",
+        attachment_url:attachmentUrl,
+        assigned_owner:data.assignedOwner||"",
+        tenant_id:tid,
+      };
+      if(existing){
+        const saved=await updateSubscription(existing.id,rec);
+        setSubs(p=>p.map(s=>s.id!==existing.id?s:normSub(saved)));
+        addAudit("SUB_UPDATED",existing.id,`${data.name} subscription updated`);
+        flash("Subscription updated");
+      } else {
+        const saved=await createSubscription({...rec,id:genId("SUB")});
+        setSubs(p=>[normSub(saved),...p]);
+        addAudit("SUB_ADDED",saved.id,`${data.name} subscription added`);
+        flash("Subscription added");
+      }
+    }catch(e){flash(e.message,"error");}
+  };
+
+  const subStatus = (s)=>{
+    const m=SUB_STATUSES.find(x=>x.v===s)||{l:s,color:C.muted,bg:"#F8FAFC"};
+    return <Chip label={m.l} color={m.color} bg={m.bg}/>;
+  };
+
+  const renewalUrgency = (renewalDate,status)=>{
+    if(status!=="active") return null;
+    const days=Math.ceil((new Date(renewalDate)-new Date())/86400000);
+    if(days<0)  return <span style={{fontSize:10,fontWeight:700,color:C.red,marginLeft:4}}>OVERDUE</span>;
+    if(days<=7) return <span style={{fontSize:10,fontWeight:700,color:C.amber,marginLeft:4}}>{days}d</span>;
+    return null;
+  };
+
+  const cats=[...new Set(subscriptions.map(s=>s.category).filter(Boolean))];
+
+  return (
+    <div>
+      <PageTitle title="IT Subscriptions" sub="Track SaaS tools, renewals and invoices"
+        action={<button onClick={()=>setModal("add")} style={btn("primary")}>+ Add Subscription</button>}/>
+
+      {expiringSoon.length>0&&(
+        <div style={{padding:"10px 16px",borderRadius:8,background:C.amberBg,border:`1px solid ${C.amber}40`,marginBottom:14,fontSize:12,color:C.amber,fontWeight:600}}>
+          ⚠ {expiringSoon.length} subscription(s) renewing within 7 days — review and action.
+        </div>
+      )}
+
+      <Filters values={f} onChange={setF} fields={[
+        {k:"q",            label:"Search",       w:200, ph:"Name or vendor…"},
+        {k:"vendor",       label:"Vendor",        w:150, ph:"Vendor name…"},
+        {k:"category",     label:"Category",      type:"select", w:150, opts:cats.map(v=>({v,l:v}))},
+        {k:"status",       label:"Status",        type:"select", w:130, opts:SUB_STATUSES.map(s=>({v:s.v,l:s.l}))},
+        {k:"renewal_from", label:"Renewal From",  type:"date",   w:150},
+        {k:"renewal_to",   label:"Renewal To",    type:"date",   w:150},
+      ]}/>
+
+      <div style={card(0)}>
+        <table style={{width:"100%",borderCollapse:"collapse"}}>
+          <TH cols={["Subscription","Vendor","Category","Cost (₦)","Renewal Date","Cycle","Status","Assigned Owner","Last Updated",""]}/>
+          <tbody>
+            {shown.length===0
+              ?<tr><td colSpan={10}><Empty icon="💳" title="No subscriptions found"/></td></tr>
+              :shown.map((s,i)=>(
+                <tr key={s.id} style={{borderBottom:i<shown.length-1?`1px solid #FAFAFA`:"none"}}>
+                  <td style={{padding:"11px 14px"}}>
+                    <div style={{fontSize:13,fontWeight:600,color:C.ink}}>{s.name}</div>
+                    {s.notes&&<div style={{fontSize:11,color:C.muted,marginTop:1,maxWidth:180,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{s.notes}</div>}
+                  </td>
+                  <td style={{padding:"11px 14px",fontSize:12,color:C.muted}}>{s.vendor}</td>
+                  <td style={{padding:"11px 14px"}}>
+                    <span style={{fontSize:11,fontWeight:600,padding:"2px 8px",borderRadius:4,background:C.surface,color:C.ink2}}>{s.category}</span>
+                  </td>
+                  <td style={{padding:"11px 14px",fontSize:13,fontWeight:700,color:C.ink}}>
+                    {s.cost?.toLocaleString()}
+                    {s.prevCost&&<div style={{fontSize:10,color:s.cost>s.prevCost?C.red:C.green,fontWeight:600}}>prev: {s.prevCost?.toLocaleString()}</div>}
+                  </td>
+                  <td style={{padding:"11px 14px",fontSize:12,color:C.ink,whiteSpace:"nowrap"}}>
+                    {fmtSafe(s.renewalDate+"T12:00:00")}
+                    {renewalUrgency(s.renewalDate,s.status)}
+                  </td>
+                  <td style={{padding:"11px 14px",fontSize:12,color:C.muted}}>{s.billingCycle}</td>
+                  <td style={{padding:"11px 14px"}}>{subStatus(s.status)}</td>
+                  <td style={{padding:"11px 14px",fontSize:12,color:C.muted}}>{s.assignedOwner||"—"}</td>
+                  <td style={{padding:"11px 14px",fontSize:11,color:C.muted,whiteSpace:"nowrap"}}>{fmtSafe(s.lastUpdated)}</td>
+                  <td style={{padding:"11px 14px"}}>
+                    <div style={{display:"flex",gap:5,alignItems:"center"}}>
+                      {s.attachmentUrl&&<a href={s.attachmentUrl} target="_blank" rel="noreferrer" style={{...btn("ghost"),fontSize:11,padding:"4px 8px",textDecoration:"none",color:C.blue}}>📎</a>}
+                      <button onClick={()=>setModal({edit:s})} style={{...btn("ghost"),fontSize:11,padding:"4px 8px"}}>Edit</button>
+                    </div>
+                  </td>
+                </tr>
+              ))}
+          </tbody>
+        </table>
+        <div style={{padding:"9px 14px",borderTop:`1px solid #FAFAFA`,fontSize:11,color:C.muted}}>{shown.length} subscription(s)</div>
+      </div>
+
+      {modal==="add"&&<SubModal onClose={()=>setModal(null)} onSave={d=>saveSub(d,null)}/>}
+      {modal?.edit&&<SubModal sub={modal.edit} onClose={()=>setModal(null)} onSave={d=>saveSub(d,modal.edit)}/>}
+    </div>
+  );
+}
+
+function SubModal({sub,onClose,onSave}){
+  const [d,setD]=useState(sub
+    ?{name:sub.name,vendor:sub.vendor||"",category:sub.category||"Other",renewalDate:sub.renewalDate||"",billingCycle:sub.billingCycle||"Yearly",cost:sub.cost||"",prevCost:sub.prevCost||"",status:sub.status||"active",notes:sub.notes||"",assignedOwner:sub.assignedOwner||"",invoiceFile:null}
+    :{name:"",vendor:"",category:"Other",renewalDate:"",billingCycle:"Yearly",cost:"",prevCost:"",status:"active",notes:"",assignedOwner:"",invoiceFile:null});
+  return (
+    <Modal title={sub?"Edit Subscription":"Add Subscription"} onClose={onClose} w={580}>
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:14}}>
+        <div style={{gridColumn:"1/-1"}}><label style={LBL}>Subscription Name</label><input value={d.name} onChange={e=>setD(p=>({...p,name:e.target.value}))} style={inp()} placeholder="e.g. Figma"/></div>
+        <div><label style={LBL}>Vendor</label><input value={d.vendor} onChange={e=>setD(p=>({...p,vendor:e.target.value}))} style={inp()} placeholder="e.g. Figma Inc."/></div>
+        <div>
+          <label style={LBL}>Category</label>
+          <select value={d.category} onChange={e=>setD(p=>({...p,category:e.target.value}))} style={inp()}>
+            {SUB_CATEGORIES.map(c=><option key={c} value={c}>{c}</option>)}
+          </select>
+        </div>
+        <div><label style={LBL}>Renewal Date</label><input type="date" value={d.renewalDate} onChange={e=>setD(p=>({...p,renewalDate:e.target.value}))} style={inp()}/></div>
+        <div>
+          <label style={LBL}>Billing Cycle</label>
+          <select value={d.billingCycle} onChange={e=>setD(p=>({...p,billingCycle:e.target.value}))} style={inp()}>
+            <option value="Monthly">Monthly</option>
+            <option value="Yearly">Yearly</option>
+          </select>
+        </div>
+        <div><label style={LBL}>Cost (latest invoice)</label><input type="number" value={d.cost} onChange={e=>setD(p=>({...p,cost:e.target.value}))} style={inp()} placeholder="0.00"/></div>
+        <div><label style={LBL}>Previous Cost (optional)</label><input type="number" value={d.prevCost} onChange={e=>setD(p=>({...p,prevCost:e.target.value}))} style={inp()} placeholder="0.00"/></div>
+        <div>
+          <label style={LBL}>Status</label>
+          <select value={d.status} onChange={e=>setD(p=>({...p,status:e.target.value}))} style={inp()}>
+            {SUB_STATUSES.map(s=><option key={s.v} value={s.v}>{s.l}</option>)}
+          </select>
+        </div>
+        <div><label style={LBL}>Assigned Owner</label><input value={d.assignedOwner} onChange={e=>setD(p=>({...p,assignedOwner:e.target.value}))} style={inp()} placeholder="Person or dept…"/></div>
+        <div style={{gridColumn:"1/-1"}}><label style={LBL}>Notes</label><textarea value={d.notes} onChange={e=>setD(p=>({...p,notes:e.target.value}))} style={{...inp(),minHeight:56,resize:"vertical"}} placeholder="Additional notes…"/></div>
+        <div style={{gridColumn:"1/-1"}}>
+          <label style={LBL}>Invoice Attachment {sub?.attachmentUrl&&<span style={{color:C.blue,fontWeight:500,textTransform:"none"}}>— <a href={sub.attachmentUrl} target="_blank" rel="noreferrer" style={{color:C.blue}}>view current</a></span>}</label>
+          <input type="file" accept=".pdf,.png,.jpg,.jpeg" onChange={e=>setD(p=>({...p,invoiceFile:e.target.files[0]||null}))} style={{...inp(),padding:"5px 8px",fontSize:11,cursor:"pointer"}}/>
+        </div>
+      </div>
+      <div style={{display:"flex",justifyContent:"flex-end",gap:8,marginTop:18,paddingTop:16,borderTop:`1px solid ${C.border}`}}>
+        <button onClick={onClose} style={btn("ghost")}>Cancel</button>
+        <button onClick={()=>{if(!d.name||!d.renewalDate)return;onSave(d);onClose();}} style={btn("primary")}>{sub?"Save Changes":"Add Subscription"}</button>
+      </div>
+    </Modal>
   );
 }
 

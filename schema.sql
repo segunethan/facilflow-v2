@@ -85,6 +85,40 @@ create table vehicles (
   color text,
   status text default 'available',       -- available | in_use | under_maintenance | reserved | out_of_service
   driver_id text,
+  ownership_type text default 'Company', -- Company | Joint
+  company_name text,
+  co_owner_name text,
+  created_at timestamptz default now(),
+  updated_at timestamptz default now()
+);
+
+-- ── VEHICLE DOCUMENTS ──────────────────────────────────────
+create table vehicle_documents (
+  id uuid primary key default gen_random_uuid(),
+  tenant_id uuid references tenants(id),
+  vehicle_id text references vehicles(id) on delete cascade,
+  document_type text not null,           -- Insurance | Road Worthiness | Vehicle License
+  expiry_date date,
+  attachment_url text,
+  last_updated timestamptz default now(),
+  unique(vehicle_id, document_type)
+);
+
+-- ── IT SUBSCRIPTIONS ───────────────────────────────────────
+create table it_subscriptions (
+  id text primary key,
+  tenant_id uuid references tenants(id),
+  name text not null,
+  vendor text,
+  category text,                         -- Design | Hosting | Email | Communication | Security | Analytics | Development | Productivity | Other
+  renewal_date date not null,
+  billing_cycle text default 'Yearly',   -- Monthly | Yearly
+  cost numeric(14,2),
+  prev_cost numeric(14,2),
+  status text default 'active',          -- active | expired | cancelled
+  notes text,
+  attachment_url text,
+  assigned_owner text,
   created_at timestamptz default now(),
   updated_at timestamptz default now()
 );
@@ -141,26 +175,30 @@ create table audit_log (
 -- ROW LEVEL SECURITY (RLS)
 -- ============================================================
 
-alter table tenants          enable row level security;
-alter table users            enable row level security;
-alter table requests         enable row level security;
-alter table change_requests  enable row level security;
-alter table vehicles         enable row level security;
-alter table drivers          enable row level security;
-alter table inventory        enable row level security;
-alter table notifications    enable row level security;
-alter table audit_log        enable row level security;
+alter table tenants           enable row level security;
+alter table users             enable row level security;
+alter table requests          enable row level security;
+alter table change_requests   enable row level security;
+alter table vehicles          enable row level security;
+alter table vehicle_documents enable row level security;
+alter table drivers           enable row level security;
+alter table inventory         enable row level security;
+alter table notifications     enable row level security;
+alter table audit_log         enable row level security;
+alter table it_subscriptions  enable row level security;
 
 -- Users can only see data from their own tenant
-create policy "tenant_isolation_users"        on users            for all using (tenant_id = (select tenant_id from users where id = auth.uid()));
-create policy "tenant_isolation_requests"     on requests         for all using (tenant_id = (select tenant_id from users where id = auth.uid()));
-create policy "tenant_isolation_crs"          on change_requests  for all using (tenant_id = (select tenant_id from users where id = auth.uid()));
-create policy "tenant_isolation_vehicles"     on vehicles         for all using (tenant_id = (select tenant_id from users where id = auth.uid()));
-create policy "tenant_isolation_drivers"      on drivers          for all using (tenant_id = (select tenant_id from users where id = auth.uid()));
-create policy "tenant_isolation_inventory"    on inventory        for all using (tenant_id = (select tenant_id from users where id = auth.uid()));
-create policy "tenant_isolation_notifs"       on notifications    for all using (tenant_id = (select tenant_id from users where id = auth.uid()));
-create policy "tenant_isolation_audit"        on audit_log        for all using (tenant_id = (select tenant_id from users where id = auth.uid()));
-create policy "tenant_read_tenants"           on tenants          for select using (id = (select tenant_id from users where id = auth.uid()));
+create policy "tenant_isolation_users"        on users             for all using (tenant_id = (select tenant_id from users where id = auth.uid()));
+create policy "tenant_isolation_requests"     on requests          for all using (tenant_id = (select tenant_id from users where id = auth.uid()));
+create policy "tenant_isolation_crs"          on change_requests   for all using (tenant_id = (select tenant_id from users where id = auth.uid()));
+create policy "tenant_isolation_vehicles"     on vehicles          for all using (tenant_id = (select tenant_id from users where id = auth.uid()));
+create policy "tenant_isolation_veh_docs"     on vehicle_documents for all using (tenant_id = (select tenant_id from users where id = auth.uid()));
+create policy "tenant_isolation_drivers"      on drivers           for all using (tenant_id = (select tenant_id from users where id = auth.uid()));
+create policy "tenant_isolation_inventory"    on inventory         for all using (tenant_id = (select tenant_id from users where id = auth.uid()));
+create policy "tenant_isolation_notifs"       on notifications     for all using (tenant_id = (select tenant_id from users where id = auth.uid()));
+create policy "tenant_isolation_audit"        on audit_log         for all using (tenant_id = (select tenant_id from users where id = auth.uid()));
+create policy "tenant_isolation_it_subs"      on it_subscriptions  for all using (tenant_id = (select tenant_id from users where id = auth.uid()));
+create policy "tenant_read_tenants"           on tenants           for select using (id = (select tenant_id from users where id = auth.uid()));
 
 -- ============================================================
 -- SEED DATA — Africa Prudential Plc

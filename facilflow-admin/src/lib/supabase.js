@@ -214,3 +214,64 @@ export const saveTenantConfig = async (tenantId, updates) => {
   if (error) throw error
   return data
 }
+
+// ── VEHICLE DOCUMENTS ─────────────────────────────────────
+export const fetchVehicleDocs = async (tenantId) => {
+  const { data, error } = await supabase
+    .from('vehicle_documents')
+    .select('*')
+    .eq('tenant_id', tenantId)
+  if (error) throw error
+  return data
+}
+
+export const upsertVehicleDoc = async (doc) => {
+  const { data, error } = await supabase
+    .from('vehicle_documents')
+    .upsert({ ...doc, last_updated: new Date().toISOString() }, { onConflict: 'vehicle_id,document_type' })
+    .select().single()
+  if (error) throw error
+  return data
+}
+
+export const uploadVehicleDoc = async (vehicleId, file) => {
+  const path = `${vehicleId}/${Date.now()}-${file.name}`
+  const { error } = await supabase.storage.from('vehicle-docs').upload(path, file)
+  if (error) throw error
+  const { data: { publicUrl } } = supabase.storage.from('vehicle-docs').getPublicUrl(path)
+  return { path, publicUrl, name: file.name, size: file.size }
+}
+
+// ── IT SUBSCRIPTIONS ──────────────────────────────────────
+export const fetchSubscriptions = async (tenantId) => {
+  const { data, error } = await supabase
+    .from('it_subscriptions')
+    .select('*')
+    .eq('tenant_id', tenantId)
+    .order('renewal_date')
+  if (error) throw error
+  return data
+}
+
+export const createSubscription = async (sub) => {
+  const { data, error } = await supabase.from('it_subscriptions').insert([sub]).select().single()
+  if (error) throw error
+  return data
+}
+
+export const updateSubscription = async (id, updates) => {
+  const { data, error } = await supabase
+    .from('it_subscriptions')
+    .update({ ...updates, updated_at: new Date().toISOString() })
+    .eq('id', id).select().single()
+  if (error) throw error
+  return data
+}
+
+export const uploadSubInvoice = async (subId, file) => {
+  const path = `${subId}/${Date.now()}-${file.name}`
+  const { error } = await supabase.storage.from('sub-invoices').upload(path, file)
+  if (error) throw error
+  const { data: { publicUrl } } = supabase.storage.from('sub-invoices').getPublicUrl(path)
+  return { path, publicUrl, name: file.name, size: file.size }
+}
