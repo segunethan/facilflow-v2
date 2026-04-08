@@ -497,8 +497,8 @@ export default function UserApp({ currentUser }){
         // Manager approved — move to first approval level or implementation if no levels
         if(levels.length > 0){
           nextStatus = "pending_approval";
-          nextStage  = `pending_level_1`;
-          nextLevel  = 1;
+          nextStage  = `pending_level_${levels[0].level}`;
+          nextLevel  = levels[0].level;
           newHistory.push({s:"pending_approval", at:iso, by:uid, label:"Manager Approved", note});
         } else {
           nextStatus = "pending_implementation";
@@ -2043,14 +2043,15 @@ function CRDetail({cr,onClose,ctx,onAction}){
   const canL2Approve   = isApprL2 && cr.current_stage==="pending_level_2";
   const canStartImpl   = isImpl && cr.status==="pending_implementation";
   const canCompleteImpl= isImpl && cr.status==="in_progress";
-  const canReview      = isRevwr && cr.status==="pending_manager";
+  const canReview      = isRevwr && !["rejected","completed","closed","failed"].includes(cr.status);
 
   const mgr   = users[cr.change_manager_id];
   const tech  = users[cr.initiator];
 
   const doAction = async (action, extra={}) => {
     setSaving(true);
-    try { await onAction(cr.id, action, note, extra); onClose(); }
+    const actionNote = action === "reviewer_comment" ? comment : note;
+    try { await onAction(cr.id, action, actionNote, extra); onClose(); }
     catch(e){ setSaving(false); }
   };
 
