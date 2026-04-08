@@ -377,9 +377,7 @@ export default function AdminApp({ currentUser }){
       fetchRequests(tid),
       fetchCRs(tid),
       fetchAuditLog(tid),
-      fetchVehicleDocs(tid),
-      fetchSubscriptions(tid),
-    ]).then(([u,v,d,inv,reqs,cr,al,vdocs,subs])=>{
+    ]).then(([u,v,d,inv,reqs,cr,al])=>{
       setUsers(u||[]);
       setVehicles((v||[]).map(normVeh));
       setDrivers((d||[]).map(normDrv));
@@ -387,10 +385,17 @@ export default function AdminApp({ currentUser }){
       setRequests(reqs||[]);
       setCrs((cr||[]).map(normCR));
       setAudit((al||[]).map(normAudit));
-      setVehicleDocs(vdocs||[]);
-      setSubs((subs||[]).map(normSub));
     }).catch(console.error)
     .finally(()=>setLoading(false));
+
+    // Load new compliance/subscription data (non-fatal — tables may not exist yet)
+    Promise.all([
+      fetchVehicleDocs(tid),
+      fetchSubscriptions(tid),
+    ]).then(([vdocs,subs])=>{
+      setVehicleDocs(vdocs||[]);
+      setSubs((subs||[]).map(normSub));
+    }).catch(e=>console.warn("Compliance/subscription data load:", e.message));
 
     // Load change management config (non-fatal)
     Promise.all([
