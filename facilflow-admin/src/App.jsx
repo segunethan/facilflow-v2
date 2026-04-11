@@ -3209,6 +3209,19 @@ function SubModal({sub,onClose,onSave}){
   const [d,setD]=useState(sub
     ?{name:sub.name,vendor:sub.vendor||"",category:sub.category||"Other",renewalDate:sub.renewalDate||"",billingCycle:sub.billingCycle||"Yearly",cost:sub.cost||"",prevCost:sub.prevCost||"",status:sub.status||"active",notes:sub.notes||"",assignedOwner:sub.assignedOwner||"",invoiceFile:null}
     :{name:"",vendor:"",category:"Other",renewalDate:"",billingCycle:"Yearly",cost:"",prevCost:"",status:"active",notes:"",assignedOwner:"",invoiceFile:null});
+  const [saving,setSaving]=useState(false);
+
+  const submit = async () => {
+    if(!d.name||!d.renewalDate) return;
+    setSaving(true);
+    try {
+      await onSave(d);
+      onClose();
+    } finally {
+      setSaving(false);
+    }
+  };
+
   return (
     <Modal title={sub?"Edit Subscription":"Add Subscription"} onClose={onClose} w={580}>
       <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:14}}>
@@ -3244,8 +3257,10 @@ function SubModal({sub,onClose,onSave}){
         </div>
       </div>
       <div style={{display:"flex",justifyContent:"flex-end",gap:8,marginTop:18,paddingTop:16,borderTop:`1px solid ${C.border}`}}>
-        <button onClick={onClose} style={btn("ghost")}>Cancel</button>
-        <button onClick={()=>{if(!d.name||!d.renewalDate)return;onSave(d);onClose();}} style={btn("primary")}>{sub?"Save Changes":"Add Subscription"}</button>
+        <button onClick={onClose} disabled={saving} style={btn("ghost")}>Cancel</button>
+        <button onClick={submit} disabled={saving||!d.name||!d.renewalDate} style={{...btn("primary"),opacity:saving||!d.name||!d.renewalDate?0.6:1}}>
+          {saving?"Saving…":(sub?"Save Changes":"Add Subscription")}
+        </button>
       </div>
     </Modal>
   );

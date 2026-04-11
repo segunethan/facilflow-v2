@@ -49,8 +49,9 @@ export const updateRequest = async (id, updates) => {
     .update({ ...updates, updated_at: new Date().toISOString() })
     .eq('id', id)
     .select()
-    .single()
+    .maybeSingle()
   if (error) throw error
+  if (!data) throw new Error(`Request ${id} could not be updated. Check that the record exists and you have permission to edit it.`)
   return data
 }
 
@@ -131,7 +132,7 @@ export const addAuditEntry = async (entry) => {
 // ── FILE STORAGE ───────────────────────────────────────────
 export const uploadAttachment = async (crId, file) => {
   const path = `${crId}/${Date.now()}-${file.name}`
-  const { data, error } = await supabase.storage.from('cr-attachments').upload(path, file)
+  const { error } = await supabase.storage.from('cr-attachments').upload(path, file)
   if (error) throw error
   const { data: { publicUrl } } = supabase.storage.from('cr-attachments').getPublicUrl(path)
   return { path, publicUrl, name: file.name, size: file.size }
