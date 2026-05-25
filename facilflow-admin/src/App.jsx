@@ -163,9 +163,17 @@ const worstDocStatus = (docs=[]) => {
 
 const SUB_CATEGORIES = ["Design","Hosting","Email","Communication","Security","Analytics","Development","Productivity","Other"];
 const SUB_STATUSES   = [
-  {v:"active",    l:"Active",    color:C.green, bg:C.greenBg},
-  {v:"expired",   l:"Expired",   color:C.red,   bg:C.redBg},
-  {v:"cancelled", l:"Cancelled", color:C.muted, bg:"#F8FAFC"},
+  {v:"active",          l:"Active",          color:C.green, bg:C.greenBg},
+  {v:"pending_renewal", l:"Pending Renewal", color:C.amber, bg:C.amberBg},
+  {v:"expired",         l:"Expired",         color:C.red,   bg:C.redBg},
+  {v:"cancelled",       l:"Cancelled",       color:C.muted, bg:"#F8FAFC"},
+];
+const SUB_CYCLES = ["Monthly","Quarterly","Semi-Annual","Annual"];
+const SUB_REMINDER_OPTS = [
+  {v:"daily",       l:"Daily"},
+  {v:"every_2_weeks",l:"Every 2 Weeks"},
+  {v:"monthly",     l:"Monthly"},
+  {v:"quarterly",   l:"Quarterly"},
 ];
 
 const STAFF_ROLES = ["employee","manager","resource_team"];
@@ -208,7 +216,7 @@ const dsm   = v => DRIVER_STATUSES.find(s=>s.v===v)||{l:v,color:C.muted,bg:"#F8F
 // DB → UI field normalizers (DB is snake_case, UI expects camelCase from original seed)
 const normCR  = cr => cr ? ({...cr, changeType:cr.change_type??cr.changeType, riskLevel:cr.risk_level??cr.riskLevel, deployDate:cr.deploy_date??cr.deployDate, deployStart:cr.deploy_start??cr.deployStart, deployEnd:cr.deploy_end??cr.deployEnd, isEmergency:cr.is_emergency??cr.isEmergency, systemName:cr.system_name??cr.systemName, createdAt:cr.created_at??cr.createdAt, updatedAt:cr.updated_at??cr.updatedAt }) : cr;
 const normVeh = v  => v  ? ({...v,  driverId:v.driver_id??v.driverId, lastUpdated:v.updated_at??v.lastUpdated, createdAt:v.created_at??v.createdAt, ownershipType:v.ownership_type??v.ownershipType, companyName:v.company_name??v.companyName, coOwnerName:v.co_owner_name??v.coOwnerName }) : v;
-const normSub  = s  => s  ? ({...s,  renewalDate:s.renewal_date??s.renewalDate, billingCycle:s.billing_cycle??s.billingCycle, prevCost:s.prev_cost??s.prevCost, attachmentUrl:s.attachment_url??s.attachmentUrl, assignedOwner:s.assigned_owner??s.assignedOwner, lastUpdated:s.updated_at??s.lastUpdated, createdAt:s.created_at??s.createdAt }) : s;
+const normSub  = s  => s  ? ({...s,  renewalDate:s.renewal_date??s.renewalDate, billingCycle:s.billing_cycle??s.billingCycle, prevCost:s.prev_cost??s.prevCost, attachmentUrl:s.attachment_url??s.attachmentUrl, assignedOwner:s.assigned_owner??s.assignedOwner, assignedDept:s.assigned_dept??s.assignedDept, reminderSchedule:s.reminder_schedule??s.reminderSchedule??["monthly"], lastUpdated:s.updated_at??s.lastUpdated, createdAt:s.created_at??s.createdAt }) : s;
 const normDrv = d  => d  ? ({...d,  vehicleId:d.vehicle_id??d.vehicleId, lastUpdated:d.updated_at??d.lastUpdated, createdAt:d.created_at??d.createdAt }) : d;
 const normInv = i  => i  ? ({...i,  desc:i.description??i.desc, lastUpdated:i.updated_at??i.lastUpdated, createdAt:i.created_at??i.createdAt }) : i;
 const normAudit = a => a ? ({...a,  at:a.created_at??a.at, by:a.performed_by??a.by }) : a;
@@ -3071,22 +3079,60 @@ function NotifPolicy({ctx}){
 // IT SUBSCRIPTIONS
 // ══════════════════════════════════════════════════════════════
 function ITSubscriptions({ctx}){
-  const {subscriptions,setSubs,addAudit,flash,tid,uid}=ctx;
-  const [f,setF]         = useState({});
-  const [modal,setModal] = useState(null);
+  const {subscriptions,setSubs,addAudit,flash,tid,uid,users}=ctx;
+  const [f,setF]          = useState({});
+  const [modal,setModal]  = useState(null);
+  const [detail,setDetail]= useState(null);
+  const [page,setPage]    = useState(1);
+  const [pageSize]        = useState(20);
+
+  const depts = [...new Set((users||[]).map(u=>u.dept).filter(Boolean))].sort();
+
+  // Auto-detect pending_renewal status on load
+  useEffect(()=>{
+    const now = new Date();
+    const toUpdate = subscriptions.filter(s=>{
+      if(s.status!=="active") return false;
+      const days = Math.ceil((new Date(s.renewalDate)-now)/86400000);
+      return days <= 30 && days >= 0;
+    });
+    if(toUpdate.length>0){
+      setSubs(p=>p.map(s=>{
+        if(s.status!=="active") return s;
+        const days = Math.ceil((new Date(s.renewalDate)-now)/86400000);
+        if(days<=30 && days>=0) return {...s, status:"pending_renewal"};
+        if(days<0) return {...s, status:"expired"};
+        return s;
+      }));
+    }
+  },[]);
 
   const shown = subscriptions.filter(s=>{
-    if(f.status   && s.status!==f.status)     return false;
-    if(f.category && s.category!==f.category) return false;
+    if(f.status    && s.status!==f.status)       return false;
+    if(f.category  && s.category!==f.category)   return false;
+    if(f.cycle     && s.billingCycle!==f.cycle)   return false;
+    if(f.dept      && s.assignedDept!==f.dept)    return false;
     if(f.vendor){const q=f.vendor.toLowerCase();if(!(s.vendor||"").toLowerCase().includes(q)) return false;}
+    if(f.owner){const q=f.owner.toLowerCase();if(!(s.assignedOwner||"").toLowerCase().includes(q)) return false;}
     if(f.renewal_from && s.renewalDate < f.renewal_from) return false;
     if(f.renewal_to   && s.renewalDate > f.renewal_to)   return false;
-    if(f.q){const q=f.q.toLowerCase();if(!s.name.toLowerCase().includes(q)&&!(s.vendor||"").toLowerCase().includes(q)) return false;}
+    if(f.q){
+      const q=f.q.toLowerCase();
+      if(!s.name.toLowerCase().includes(q)
+        &&!(s.vendor||"").toLowerCase().includes(q)
+        &&!(s.assignedOwner||"").toLowerCase().includes(q)) return false;
+    }
     return true;
   });
 
+  const totalPages = Math.max(1, Math.ceil(shown.length/pageSize));
+  const paged = shown.slice((page-1)*pageSize, page*pageSize);
+
+  // Reset page on filter change
+  useEffect(()=>{ setPage(1); },[f]);
+
   const expiringSoon = subscriptions.filter(s=>{
-    if(s.status!=="active") return false;
+    if(s.status==="cancelled"||s.status==="expired") return false;
     const days=Math.ceil((new Date(s.renewalDate)-new Date())/86400000);
     return days>=0&&days<=7;
   });
@@ -3107,6 +3153,8 @@ function ITSubscriptions({ctx}){
         status:data.status, notes:data.notes||"",
         attachment_url:attachmentUrl,
         assigned_owner:data.assignedOwner||"",
+        assigned_dept:data.assignedDept||"",
+        reminder_schedule:data.reminderSchedule||["monthly"],
         tenant_id:tid,
       };
       if(existing){
@@ -3123,24 +3171,26 @@ function ITSubscriptions({ctx}){
     }catch(e){flash(e.message,"error");}
   };
 
-  const subStatus = (s)=>{
+  const subStatusChip = (s)=>{
     const m=SUB_STATUSES.find(x=>x.v===s)||{l:s,color:C.muted,bg:"#F8FAFC"};
     return <Chip label={m.l} color={m.color} bg={m.bg}/>;
   };
 
   const renewalUrgency = (renewalDate,status)=>{
-    if(status!=="active") return null;
+    if(status==="cancelled"||status==="expired") return null;
     const days=Math.ceil((new Date(renewalDate)-new Date())/86400000);
-    if(days<0)  return <span style={{fontSize:10,fontWeight:700,color:C.red,marginLeft:4}}>OVERDUE</span>;
-    if(days<=7) return <span style={{fontSize:10,fontWeight:700,color:C.amber,marginLeft:4}}>{days}d</span>;
+    if(days<0)   return <span style={{fontSize:10,fontWeight:700,color:C.red,marginLeft:4}}>OVERDUE</span>;
+    if(days<=7)  return <span style={{fontSize:10,fontWeight:700,color:C.red,marginLeft:4}}>{days}d</span>;
+    if(days<=30) return <span style={{fontSize:10,fontWeight:700,color:C.amber,marginLeft:4}}>{days}d</span>;
     return null;
   };
 
-  const cats=[...new Set(subscriptions.map(s=>s.category).filter(Boolean))];
+  const cats=[...new Set(subscriptions.map(s=>s.category).filter(Boolean))].sort();
+  const vendors=[...new Set(subscriptions.map(s=>s.vendor).filter(Boolean))].sort();
 
   return (
     <div>
-      <PageTitle title="IT Subscriptions" sub="Track SaaS tools, renewals and invoices"
+      <PageTitle title="IT Subscriptions" sub="Track SaaS tools, renewals, billing cycles and reminders"
         action={<button onClick={()=>setModal("add")} style={btn("primary")}>+ Add Subscription</button>}/>
 
       {expiringSoon.length>0&&(
@@ -3149,67 +3199,189 @@ function ITSubscriptions({ctx}){
         </div>
       )}
 
-      <Filters values={f} onChange={setF} fields={[
-        {k:"q",            label:"Search",       w:200, ph:"Name or vendor…"},
-        {k:"vendor",       label:"Vendor",        w:150, ph:"Vendor name…"},
-        {k:"category",     label:"Category",      type:"select", w:150, opts:cats.map(v=>({v,l:v}))},
-        {k:"status",       label:"Status",        type:"select", w:130, opts:SUB_STATUSES.map(s=>({v:s.v,l:s.l}))},
-        {k:"renewal_from", label:"Renewal From",  type:"date",   w:150},
-        {k:"renewal_to",   label:"Renewal To",    type:"date",   w:150},
-      ]}/>
+      {/* ── FILTER PANEL ── */}
+      <div style={{display:"flex",gap:10,flexWrap:"wrap",padding:"12px 14px",background:"#fff",border:`1px solid ${C.border}`,borderRadius:8,marginBottom:16,alignItems:"flex-end"}}>
+        <div style={{minWidth:220}}>
+          <label style={LBL}>Search</label>
+          <input value={f.q||""} placeholder="Name, vendor or owner…" onChange={e=>setF(p=>({...p,q:e.target.value}))} style={{...inp(),padding:"6px 9px",fontSize:12}}/>
+        </div>
+        <div style={{minWidth:140}}>
+          <label style={LBL}>Status</label>
+          <select value={f.status||""} onChange={e=>setF(p=>({...p,status:e.target.value}))} style={{...inp(),padding:"6px 9px",fontSize:12}}>
+            <option value="">All</option>
+            {SUB_STATUSES.map(s=><option key={s.v} value={s.v}>{s.l}</option>)}
+          </select>
+        </div>
+        <div style={{minWidth:140}}>
+          <label style={LBL}>Billing Cycle</label>
+          <select value={f.cycle||""} onChange={e=>setF(p=>({...p,cycle:e.target.value}))} style={{...inp(),padding:"6px 9px",fontSize:12}}>
+            <option value="">All</option>
+            {SUB_CYCLES.map(c=><option key={c} value={c}>{c}</option>)}
+          </select>
+        </div>
+        <div style={{minWidth:140}}>
+          <label style={LBL}>Category</label>
+          <select value={f.category||""} onChange={e=>setF(p=>({...p,category:e.target.value}))} style={{...inp(),padding:"6px 9px",fontSize:12}}>
+            <option value="">All</option>
+            {cats.map(v=><option key={v} value={v}>{v}</option>)}
+          </select>
+        </div>
+        <div style={{minWidth:140}}>
+          <label style={LBL}>Vendor</label>
+          <select value={f.vendor||""} onChange={e=>setF(p=>({...p,vendor:e.target.value}))} style={{...inp(),padding:"6px 9px",fontSize:12}}>
+            <option value="">All</option>
+            {vendors.map(v=><option key={v} value={v}>{v}</option>)}
+          </select>
+        </div>
+        <div style={{minWidth:140}}>
+          <label style={LBL}>Department</label>
+          <select value={f.dept||""} onChange={e=>setF(p=>({...p,dept:e.target.value}))} style={{...inp(),padding:"6px 9px",fontSize:12}}>
+            <option value="">All</option>
+            {depts.map(d=><option key={d} value={d}>{d}</option>)}
+          </select>
+        </div>
+        <div style={{minWidth:130}}>
+          <label style={LBL}>Owner</label>
+          <input value={f.owner||""} placeholder="Owner name…" onChange={e=>setF(p=>({...p,owner:e.target.value}))} style={{...inp(),padding:"6px 9px",fontSize:12}}/>
+        </div>
+        <div style={{minWidth:130}}>
+          <label style={LBL}>Renewal From</label>
+          <input type="date" value={f.renewal_from||""} onChange={e=>setF(p=>({...p,renewal_from:e.target.value}))} style={{...inp(),padding:"6px 9px",fontSize:12}}/>
+        </div>
+        <div style={{minWidth:130}}>
+          <label style={LBL}>Renewal To</label>
+          <input type="date" value={f.renewal_to||""} onChange={e=>setF(p=>({...p,renewal_to:e.target.value}))} style={{...inp(),padding:"6px 9px",fontSize:12}}/>
+        </div>
+        <button onClick={()=>setF({})} style={{...btn("ghost"),padding:"6px 12px",fontSize:11,alignSelf:"flex-end"}}>Clear</button>
+      </div>
 
       <div style={card(0)}>
         <table style={{width:"100%",borderCollapse:"collapse"}}>
-          <TH cols={["Subscription","Vendor","Category","Cost (₦)","Renewal Date","Cycle","Status","Assigned Owner","Last Updated",""]}/>
+          <TH cols={["Subscription","Vendor","Cost (₦)","Cycle","Renewal Date","Status","Dept / Owner","Last Updated",""]}/>
           <tbody>
-            {shown.length===0
-              ?<tr><td colSpan={10}><Empty icon="💳" title="No subscriptions found"/></td></tr>
-              :shown.map((s,i)=>(
-                <tr key={s.id} style={{borderBottom:i<shown.length-1?`1px solid #FAFAFA`:"none"}}>
-                  <td style={{padding:"11px 14px"}}>
-                    <div style={{fontSize:13,fontWeight:600,color:C.ink}}>{s.name}</div>
-                    {s.notes&&<div style={{fontSize:11,color:C.muted,marginTop:1,maxWidth:180,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{s.notes}</div>}
-                  </td>
-                  <td style={{padding:"11px 14px",fontSize:12,color:C.muted}}>{s.vendor}</td>
-                  <td style={{padding:"11px 14px"}}>
-                    <span style={{fontSize:11,fontWeight:600,padding:"2px 8px",borderRadius:4,background:C.surface,color:C.ink2}}>{s.category}</span>
-                  </td>
-                  <td style={{padding:"11px 14px",fontSize:13,fontWeight:700,color:C.ink}}>
-                    {s.cost?.toLocaleString()}
-                    {s.prevCost&&<div style={{fontSize:10,color:s.cost>s.prevCost?C.red:C.green,fontWeight:600}}>prev: {s.prevCost?.toLocaleString()}</div>}
-                  </td>
-                  <td style={{padding:"11px 14px",fontSize:12,color:C.ink,whiteSpace:"nowrap"}}>
-                    {fmtSafe(s.renewalDate+"T12:00:00")}
-                    {renewalUrgency(s.renewalDate,s.status)}
-                  </td>
-                  <td style={{padding:"11px 14px",fontSize:12,color:C.muted}}>{s.billingCycle}</td>
-                  <td style={{padding:"11px 14px"}}>{subStatus(s.status)}</td>
-                  <td style={{padding:"11px 14px",fontSize:12,color:C.muted}}>{s.assignedOwner||"—"}</td>
-                  <td style={{padding:"11px 14px",fontSize:11,color:C.muted,whiteSpace:"nowrap"}}>{fmtSafe(s.lastUpdated)}</td>
-                  <td style={{padding:"11px 14px"}}>
-                    <div style={{display:"flex",gap:5,alignItems:"center"}}>
-                      {s.attachmentUrl&&<a href={s.attachmentUrl} target="_blank" rel="noreferrer" style={{...btn("ghost"),fontSize:11,padding:"4px 8px",textDecoration:"none",color:C.blue}}>📎</a>}
-                      <button onClick={()=>setModal({edit:s})} style={{...btn("ghost"),fontSize:11,padding:"4px 8px"}}>Edit</button>
-                    </div>
-                  </td>
-                </tr>
-              ))}
+            {paged.length===0
+              ?<tr><td colSpan={9}><Empty icon="💳" title="No subscriptions found"/></td></tr>
+              :paged.map((s,i)=>{
+                const rowBg = s.status==="expired"?`${C.red}06`:s.status==="pending_renewal"?`${C.amber}06`:"transparent";
+                return (
+                  <tr key={s.id} onClick={()=>setDetail(s)} style={{borderBottom:i<paged.length-1?`1px solid #FAFAFA`:"none",background:rowBg,cursor:"pointer"}}>
+                    <td style={{padding:"11px 14px"}}>
+                      <div style={{fontSize:13,fontWeight:600,color:C.ink}}>{s.name}</div>
+                      {s.category&&<div style={{fontSize:10,color:C.muted,marginTop:1}}>{s.category}</div>}
+                    </td>
+                    <td style={{padding:"11px 14px",fontSize:12,color:C.muted}}>{s.vendor||"—"}</td>
+                    <td style={{padding:"11px 14px",fontSize:13,fontWeight:700,color:C.ink}}>
+                      {s.cost?`₦${Number(s.cost).toLocaleString()}`:"—"}
+                      {s.prevCost!=null&&s.prevCost!==s.cost&&<div style={{fontSize:10,color:Number(s.cost)>Number(s.prevCost)?C.red:C.green,fontWeight:600}}>prev: ₦{Number(s.prevCost).toLocaleString()}</div>}
+                    </td>
+                    <td style={{padding:"11px 14px",fontSize:12,color:C.muted}}>{s.billingCycle}</td>
+                    <td style={{padding:"11px 14px",fontSize:12,color:C.ink,whiteSpace:"nowrap"}}>
+                      {fmtSafe(s.renewalDate+"T12:00:00")}
+                      {renewalUrgency(s.renewalDate,s.status)}
+                    </td>
+                    <td style={{padding:"11px 14px"}}>{subStatusChip(s.status)}</td>
+                    <td style={{padding:"11px 14px"}}>
+                      <div style={{fontSize:12,color:C.ink2}}>{s.assignedOwner||"—"}</div>
+                      {s.assignedDept&&<div style={{fontSize:10,color:C.muted}}>{s.assignedDept}</div>}
+                    </td>
+                    <td style={{padding:"11px 14px",fontSize:11,color:C.muted,whiteSpace:"nowrap"}}>{fmtSafe(s.lastUpdated)}</td>
+                    <td style={{padding:"11px 14px"}} onClick={e=>e.stopPropagation()}>
+                      <div style={{display:"flex",gap:5,alignItems:"center"}}>
+                        {s.attachmentUrl&&<a href={s.attachmentUrl} target="_blank" rel="noreferrer" style={{...btn("ghost"),fontSize:11,padding:"4px 8px",textDecoration:"none",color:C.blue}}>📎</a>}
+                        <button onClick={()=>setModal({edit:s})} style={{...btn("ghost"),fontSize:11,padding:"4px 8px"}}>Edit</button>
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
           </tbody>
         </table>
-        <div style={{padding:"9px 14px",borderTop:`1px solid #FAFAFA`,fontSize:11,color:C.muted}}>{shown.length} subscription(s)</div>
+
+        {/* PAGINATION */}
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"9px 14px",borderTop:`1px solid #FAFAFA`}}>
+          <div style={{fontSize:11,color:C.muted}}>{shown.length} subscription(s)</div>
+          {totalPages>1&&(
+            <div style={{display:"flex",gap:4,alignItems:"center"}}>
+              <button onClick={()=>setPage(1)} disabled={page===1} style={{...btn("ghost"),padding:"4px 8px",fontSize:12,opacity:page===1?.4:1}}>«</button>
+              <button onClick={()=>setPage(p=>p-1)} disabled={page===1} style={{...btn("ghost"),padding:"4px 8px",fontSize:12,opacity:page===1?.4:1}}>‹</button>
+              {Array.from({length:Math.min(5,totalPages)},(_,i)=>{
+                const pg=Math.max(1,Math.min(page-2,totalPages-4))+i;
+                if(pg<1||pg>totalPages) return null;
+                return <button key={pg} onClick={()=>setPage(pg)} style={{...btn(pg===page?"primary":"ghost"),padding:"4px 10px",fontSize:12,minWidth:32}}>{pg}</button>;
+              })}
+              <button onClick={()=>setPage(p=>p+1)} disabled={page===totalPages} style={{...btn("ghost"),padding:"4px 8px",fontSize:12,opacity:page===totalPages?.4:1}}>›</button>
+              <button onClick={()=>setPage(totalPages)} disabled={page===totalPages} style={{...btn("ghost"),padding:"4px 8px",fontSize:12,opacity:page===totalPages?.4:1}}>»</button>
+              <span style={{fontSize:11,color:C.muted,marginLeft:6}}>Page {page} of {totalPages}</span>
+            </div>
+          )}
+        </div>
       </div>
 
-      {modal==="add"&&<SubModal onClose={()=>setModal(null)} onSave={d=>saveSub(d,null)}/>}
-      {modal?.edit&&<SubModal sub={modal.edit} onClose={()=>setModal(null)} onSave={d=>saveSub(d,modal.edit)}/>}
+      {modal==="add"&&<SubModal depts={depts} onClose={()=>setModal(null)} onSave={d=>saveSub(d,null)}/>}
+      {modal?.edit&&<SubModal sub={modal.edit} depts={depts} onClose={()=>setModal(null)} onSave={d=>saveSub(d,modal.edit)}/>}
+      {detail&&<SubDetailModal sub={detail} depts={depts} users={users} onClose={()=>setDetail(null)} onEdit={s=>{setDetail(null);setModal({edit:s});}}/>}
     </div>
   );
 }
 
-function SubModal({sub,onClose,onSave}){
+function SubDetailModal({sub,depts,users,onClose,onEdit}){
+  const st = SUB_STATUSES.find(x=>x.v===sub.status)||{l:sub.status,color:C.muted,bg:"#F8FAFC"};
+  const days = Math.ceil((new Date(sub.renewalDate)-new Date())/86400000);
+  const reminders = (sub.reminderSchedule||["monthly"]).map(r=>SUB_REMINDER_OPTS.find(o=>o.v===r)?.l||r);
+
+  return (
+    <Modal title={sub.name} sub={`${sub.vendor||""} · ${sub.category||""}`} onClose={onClose} w={640}>
+      {/* Status + cycle header */}
+      <div style={{display:"flex",gap:8,flexWrap:"wrap",marginBottom:16,padding:"10px 12px",background:C.pageBg,borderRadius:8}}>
+        <Chip label={st.l} color={st.color} bg={st.bg}/>
+        <span style={{fontSize:11,fontWeight:600,padding:"2px 8px",borderRadius:4,background:"#fff",border:`1px solid ${C.border}`,color:C.muted}}>{sub.billingCycle}</span>
+        {days>=0&&days<=30&&<span style={{fontSize:11,fontWeight:700,padding:"2px 8px",borderRadius:4,background:days<=7?C.redBg:C.amberBg,color:days<=7?C.red:C.amber}}>Renews in {days}d</span>}
+        {days<0&&<span style={{fontSize:11,fontWeight:700,padding:"2px 8px",borderRadius:4,background:C.redBg,color:C.red}}>Overdue {Math.abs(days)}d</span>}
+      </div>
+
+      {/* Detail grid */}
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:16}}>
+        {[["Vendor",sub.vendor],["Category",sub.category],["Cost",sub.cost?`₦${Number(sub.cost).toLocaleString()}`:"—"],["Previous Cost",sub.prevCost!=null?`₦${Number(sub.prevCost).toLocaleString()}`:"—"],["Billing Cycle",sub.billingCycle],["Renewal Date",fmtSafe(sub.renewalDate+"T12:00:00")],["Assigned Owner",sub.assignedOwner||"—"],["Department",sub.assignedDept||"—"],["Reminders",reminders.join(", ")],["Last Updated",fmtSafe(sub.lastUpdated)]].map(([k,v])=>(
+          <div key={k} style={{background:C.pageBg,borderRadius:7,padding:"10px 12px"}}>
+            <div style={{fontSize:10,fontWeight:700,color:C.muted,textTransform:"uppercase",letterSpacing:".06em",marginBottom:3}}>{k}</div>
+            <div style={{fontSize:13,color:C.ink,fontWeight:500}}>{String(v||"—")}</div>
+          </div>
+        ))}
+      </div>
+
+      {sub.notes&&(
+        <div style={{background:C.pageBg,borderRadius:7,padding:"12px 14px",marginBottom:16}}>
+          <div style={{fontSize:10,fontWeight:700,color:C.muted,textTransform:"uppercase",letterSpacing:".06em",marginBottom:6}}>Notes</div>
+          <div style={{fontSize:13,color:C.ink,lineHeight:1.7,whiteSpace:"pre-wrap"}}>{sub.notes}</div>
+        </div>
+      )}
+
+      {sub.attachmentUrl&&(
+        <div style={{marginBottom:16}}>
+          <a href={sub.attachmentUrl} target="_blank" rel="noreferrer" style={{color:C.blue,textDecoration:"none",fontSize:13,fontWeight:600}}>📎 View Invoice Attachment</a>
+        </div>
+      )}
+
+      <div style={{display:"flex",justifyContent:"flex-end",gap:8,paddingTop:14,borderTop:`1px solid ${C.border}`}}>
+        <button onClick={onClose} style={btn("ghost")}>Close</button>
+        <button onClick={()=>onEdit(sub)} style={btn("primary")}>Edit Subscription</button>
+      </div>
+    </Modal>
+  );
+}
+
+function SubModal({sub,depts,onClose,onSave}){
   const [d,setD]=useState(sub
-    ?{name:sub.name,vendor:sub.vendor||"",category:sub.category||"Other",renewalDate:sub.renewalDate||"",billingCycle:sub.billingCycle||"Yearly",cost:sub.cost||"",prevCost:sub.prevCost||"",status:sub.status||"active",notes:sub.notes||"",assignedOwner:sub.assignedOwner||"",invoiceFile:null}
-    :{name:"",vendor:"",category:"Other",renewalDate:"",billingCycle:"Yearly",cost:"",prevCost:"",status:"active",notes:"",assignedOwner:"",invoiceFile:null});
+    ?{name:sub.name,vendor:sub.vendor||"",category:sub.category||"Other",renewalDate:sub.renewalDate||"",billingCycle:sub.billingCycle||"Annual",cost:sub.cost||"",prevCost:sub.prevCost||"",status:sub.status||"active",notes:sub.notes||"",assignedOwner:sub.assignedOwner||"",assignedDept:sub.assignedDept||"",reminderSchedule:sub.reminderSchedule||["monthly"],invoiceFile:null}
+    :{name:"",vendor:"",category:"Other",renewalDate:"",billingCycle:"Annual",cost:"",prevCost:"",status:"active",notes:"",assignedOwner:"",assignedDept:"",reminderSchedule:["monthly"],invoiceFile:null});
   const [saving,setSaving]=useState(false);
+
+  const toggleReminder = (v) => {
+    setD(p=>{
+      const cur = p.reminderSchedule||[];
+      return {...p, reminderSchedule: cur.includes(v) ? cur.filter(x=>x!==v) : [...cur,v]};
+    });
+  };
 
   const submit = async () => {
     if(!d.name||!d.renewalDate) return;
@@ -3223,7 +3395,7 @@ function SubModal({sub,onClose,onSave}){
   };
 
   return (
-    <Modal title={sub?"Edit Subscription":"Add Subscription"} onClose={onClose} w={580}>
+    <Modal title={sub?"Edit Subscription":"Add Subscription"} onClose={onClose} w={620}>
       <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:14}}>
         <div style={{gridColumn:"1/-1"}}><label style={LBL}>Subscription Name</label><input value={d.name} onChange={e=>setD(p=>({...p,name:e.target.value}))} style={inp()} placeholder="e.g. Figma"/></div>
         <div><label style={LBL}>Vendor</label><input value={d.vendor} onChange={e=>setD(p=>({...p,vendor:e.target.value}))} style={inp()} placeholder="e.g. Figma Inc."/></div>
@@ -3237,8 +3409,7 @@ function SubModal({sub,onClose,onSave}){
         <div>
           <label style={LBL}>Billing Cycle</label>
           <select value={d.billingCycle} onChange={e=>setD(p=>({...p,billingCycle:e.target.value}))} style={inp()}>
-            <option value="Monthly">Monthly</option>
-            <option value="Yearly">Yearly</option>
+            {SUB_CYCLES.map(c=><option key={c} value={c}>{c}</option>)}
           </select>
         </div>
         <div><label style={LBL}>Cost (latest invoice)</label><input type="number" value={d.cost} onChange={e=>setD(p=>({...p,cost:e.target.value}))} style={inp()} placeholder="0.00"/></div>
@@ -3249,7 +3420,34 @@ function SubModal({sub,onClose,onSave}){
             {SUB_STATUSES.map(s=><option key={s.v} value={s.v}>{s.l}</option>)}
           </select>
         </div>
-        <div><label style={LBL}>Assigned Owner</label><input value={d.assignedOwner} onChange={e=>setD(p=>({...p,assignedOwner:e.target.value}))} style={inp()} placeholder="Person or dept…"/></div>
+        <div>
+          <label style={LBL}>Department</label>
+          <select value={d.assignedDept} onChange={e=>setD(p=>({...p,assignedDept:e.target.value}))} style={inp()}>
+            <option value="">Select department…</option>
+            {(depts||[]).map(dept=><option key={dept} value={dept}>{dept}</option>)}
+          </select>
+        </div>
+        <div><label style={LBL}>Assigned Owner</label><input value={d.assignedOwner} onChange={e=>setD(p=>({...p,assignedOwner:e.target.value}))} style={inp()} placeholder="Person responsible…"/></div>
+
+        {/* REMINDER SCHEDULE */}
+        <div style={{gridColumn:"1/-1"}}>
+          <label style={LBL}>Reminder Schedule <span style={{textTransform:"none",fontWeight:500,color:C.muted}}>(select one or more)</span></label>
+          <div style={{display:"flex",gap:8,flexWrap:"wrap",marginTop:4}}>
+            {SUB_REMINDER_OPTS.map(opt=>{
+              const active = (d.reminderSchedule||[]).includes(opt.v);
+              return (
+                <button key={opt.v} type="button" onClick={()=>toggleReminder(opt.v)}
+                  style={{padding:"6px 14px",borderRadius:6,fontSize:12,fontWeight:active?700:500,cursor:"pointer",fontFamily:"inherit",
+                    border:`1.5px solid ${active?C.brand:C.border}`,
+                    background:active?C.brandLt:"#fff",
+                    color:active?C.brand:C.muted}}>
+                  {active?"✓ ":""}{opt.l}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
         <div style={{gridColumn:"1/-1"}}><label style={LBL}>Notes</label><textarea value={d.notes} onChange={e=>setD(p=>({...p,notes:e.target.value}))} style={{...inp(),minHeight:56,resize:"vertical"}} placeholder="Additional notes…"/></div>
         <div style={{gridColumn:"1/-1"}}>
           <label style={LBL}>Invoice Attachment {sub?.attachmentUrl&&<span style={{color:C.blue,fontWeight:500,textTransform:"none"}}>— <a href={sub.attachmentUrl} target="_blank" rel="noreferrer" style={{color:C.blue}}>view current</a></span>}</label>
