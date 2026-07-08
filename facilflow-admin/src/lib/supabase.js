@@ -276,3 +276,79 @@ export const uploadSubInvoice = async (subId, file) => {
   const { data: { publicUrl } } = supabase.storage.from('sub-invoices').getPublicUrl(path)
   return { path, publicUrl, name: file.name, size: file.size }
 }
+// ── HELPDESK TICKETS ─────────────────────────────────────
+export const fetchTickets = async (tenantId) => {
+  const { data, error } = await supabase
+    .from('tickets')
+    .select('*')
+    .eq('tenant_id', tenantId)
+    .order('created_at', { ascending: false })
+  if (error) throw error
+  return data
+}
+
+export const updateTicket = async (id, updates) => {
+  const { data, error } = await supabase
+    .from('tickets')
+    .update({ ...updates, updated_at: new Date().toISOString() })
+    .eq('id', id).select().single()
+  if (error) throw error
+  return data
+}
+
+export const fetchTicketComments = async (ticketId) => {
+  const { data, error } = await supabase
+    .from('ticket_comments')
+    .select('*')
+    .eq('ticket_id', ticketId)
+    .order('created_at')
+  if (error) throw error
+  return data
+}
+
+export const addTicketComment = async (comment) => {
+  const { data, error } = await supabase
+    .from('ticket_comments')
+    .insert([{ ...comment, created_at: new Date().toISOString() }])
+    .select().single()
+  if (error) throw error
+  return data
+}
+
+export const fetchTicketCategories = async (tenantId) => {
+  const { data, error } = await supabase
+    .from('ticket_categories')
+    .select('*')
+    .eq('tenant_id', tenantId)
+    .order('category')
+  if (error) throw error
+  return data
+}
+
+// ── ASSETS ───────────────────────────────────────────────
+export const fetchAssets = async (tenantId) => {
+  const { data, error } = await supabase
+    .from('assets')
+    .select('*')
+    .eq('tenant_id', tenantId)
+    .order('created_at', { ascending: false })
+  if (error) throw error
+  return data
+}
+
+const ASSET_COLS = ['tenant_id','asset_tag','name','category','serial_number','assigned_to','assigned_date','department','site','status','purchase_date','notes','usage_history']
+
+export const createAsset = async (asset) => {
+  const clean = Object.fromEntries(Object.entries(asset).filter(([k]) => ASSET_COLS.includes(k)))
+  const { data, error } = await supabase.from('assets').insert([clean]).select().single()
+  if (error) throw error
+  return data
+}
+
+export const updateAsset = async (id, updates) => {
+  const allowed = [...ASSET_COLS.filter(c => c !== 'tenant_id'), 'updated_at']
+  const clean = Object.fromEntries(Object.entries({ ...updates, updated_at: new Date().toISOString() }).filter(([k]) => allowed.includes(k)))
+  const { data, error } = await supabase.from('assets').update(clean).eq('id', id).select().single()
+  if (error) throw error
+  return data
+}

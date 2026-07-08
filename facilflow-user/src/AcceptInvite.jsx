@@ -14,41 +14,64 @@ const inp = (err=false) => ({
 const LBL = { fontSize:11, fontWeight:700, color:C.muted, textTransform:'uppercase', letterSpacing:'.07em', display:'block', marginBottom:5 }
 
 export default function AcceptInvite({ onComplete, appName='Staff Portal' }) {
-  const [step,     setStep]    = useState('loading')
-  const [name,     setName]    = useState('')
-  const [password, setPass]    = useState('')
-  const [confirm,  setConfirm] = useState('')
-  const [error,    setError]   = useState('')
-  const [saving,   setSaving]  = useState(false)
-  const [session,  setSession] = useState(null)
+  const [step,      setStep]     = useState('loading')
+  const [firstName, setFirstName]= useState('')
+  const [lastName,  setLastName] = useState('')
+  const [password,  setPass]     = useState('')
+  const [confirm,   setConfirm]  = useState('')
+  const [error,     setError]    = useState('')
+  const [saving,    setSaving]   = useState(false)
+  const [session,   setSession]  = useState(null)
 
   useEffect(() => {
     const { data: { subscription } } = supabase.auth.onAuthStateChange((event, sess) => {
       if ((event === 'SIGNED_IN' || event === 'USER_UPDATED') && sess) {
         setSession(sess)
-        const meta = sess.user?.user_metadata
-        if (meta?.full_name) setName(meta.full_name)
+        prefillName(sess.user?.user_metadata?.full_name)
         setStep('form')
       }
     })
     supabase.auth.getSession().then(({ data: { session: s } }) => {
-      if (s) { setSession(s); const m=s.user?.user_metadata; if(m?.full_name) setName(m.full_name); setStep('form') }
-      else setTimeout(() => setStep(p => p==='loading' ? 'error' : p), 6000)
+      if (s) {
+        setSession(s)
+        prefillName(s.user?.user_metadata?.full_name)
+        setStep('form')
+      } else {
+        setTimeout(() => setStep(p => p==='loading' ? 'error' : p), 6000)
+      }
     })
     return () => subscription.unsubscribe()
   }, [])
 
+  const prefillName = (fullName) => {
+    if (!fullName) return
+    const parts = fullName.trim().split(/\s+/)
+    setFirstName(parts[0] || '')
+    setLastName(parts.slice(1).join(' ') || '')
+  }
+
   const submit = async () => {
     setError('')
-    if (!name.trim()) return setError('Please enter your full name.')
+    if (!firstName.trim()) return setError('Please enter your first name.')
+    if (!lastName.trim())  return setError('Please enter your last name.')
     if (password.length < 8) return setError('Password must be at least 8 characters.')
     if (password !== confirm) return setError('Passwords do not match.')
     setSaving(true)
     try {
-      const { error: e1 } = await supabase.auth.updateUser({ password, data: { full_name: name.trim() } })
+      const fullName = `${firstName.trim()} ${lastName.trim()}`
+      const initials = [firstName, lastName].map(n=>n[0]||'').join('').toUpperCase()
+
+      const { error: e1 } = await supabase.auth.updateUser({
+        password,
+        data: { full_name: fullName },
+      })
       if (e1) throw e1
-      const initials = name.trim().split(' ').map(n=>n[0]).join('').slice(0,2).toUpperCase()
-      await supabase.from('users').update({ name: name.trim(), initials, status:'active', id: session.user.id }).eq('email', session.user.email)
+
+      await supabase
+        .from('users')
+        .update({ name: fullName, first_name: firstName.trim(), last_name: lastName.trim(), initials, status: 'active' })
+        .eq('email', session.user.email)
+
       setStep('success')
       setTimeout(() => onComplete(session.user), 1800)
     } catch(e) { setError(e.message) }
@@ -99,7 +122,16 @@ export default function AcceptInvite({ onComplete, appName='Staff Portal' }) {
               <div style={{ fontSize:13,color:C.muted,marginTop:5,lineHeight:1.6 }}>You've been invited to FaciliFlow. Enter your name and choose a password.</div>
             </div>
             <div style={{ display:'flex',flexDirection:'column',gap:14 }}>
-              <div><label style={LBL}>Your Full Name</label><input value={name} onChange={e=>setName(e.target.value)} placeholder="e.g. Adaeze Okonkwo" autoFocus style={inp(!name&&!!error)}/></div>
+              <div style={{ display:'grid',gridTemplateColumns:'1fr 1fr',gap:12 }}>
+                <div>
+                  <label style={LBL}>First Name *</label>
+                  <input value={firstName} onChange={e=>setFirstName(e.target.value)} placeholder="Adaeze" autoFocus style={inp(!firstName&&!!error)}/>
+                </div>
+                <div>
+                  <label style={LBL}>Last Name *</label>
+                  <input value={lastName} onChange={e=>setLastName(e.target.value)} placeholder="Okonkwo" style={inp(!lastName&&!!error)}/>
+                </div>
+              </div>
               <div><label style={LBL}>Email Address</label><input value={session?.user?.email||''} disabled style={{...inp(),background:'#F8FAFC',color:C.muted,cursor:'not-allowed'}}/></div>
               <div><label style={LBL}>Choose a Password</label><input type="password" value={password} onChange={e=>setPass(e.target.value)} placeholder="Minimum 8 characters" style={inp(!!error&&password.length<8)} onKeyDown={e=>e.key==='Enter'&&submit()}/></div>
               <div><label style={LBL}>Confirm Password</label><input type="password" value={confirm} onChange={e=>setConfirm(e.target.value)} placeholder="Re-enter your password" style={inp(!!error&&password!==confirm)} onKeyDown={e=>e.key==='Enter'&&submit()}/></div>

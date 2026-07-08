@@ -218,6 +218,99 @@ const templates = {
       ${cta(d.app_url || "https://facilflowuser.vercel.app", "Review & Approve Now →", AMB)}
     `))
   }),
+
+  // ── HELPDESK / TICKET TEMPLATES ───────────────────────────
+
+  // Sent to IT admins when a user raises a new ticket
+  ticket_created: (d) => ({
+    subject: `New Ticket ${d.ticket_id}: ${d.subject} — FaciliFlow`,
+    html: wrap(hdr(B, "New Support Ticket", "A staff member has raised a ticket requiring attention") + body(`
+      ${p(`A new <strong>${d.type || "support"}</strong> ticket has been submitted by <strong>${d.raised_by || "a staff member"}</strong>.`)}
+      ${d.priority === "critical" || d.priority === "high"
+        ? hl(`🚨 <strong>${(d.priority || "").toUpperCase()} PRIORITY</strong> — Please action this ticket promptly.`, RED, RBG)
+        : ""}
+      ${table(
+        row("Ticket ID",  d.ticket_id) +
+        row("Subject",    d.subject) +
+        row("Type",       d.type) +
+        row("Priority",   (d.priority || "medium").charAt(0).toUpperCase() + (d.priority || "medium").slice(1)) +
+        row("Category",   d.category) +
+        row("Department", d.department) +
+        row("Raised By",  d.raised_by)
+      )}
+      ${d.description ? `<div style="margin-bottom:20px">
+        <div style="font-family:Arial,sans-serif;font-size:11px;font-weight:700;color:${MUT};text-transform:uppercase;letter-spacing:0.8px;margin-bottom:8px">Description</div>
+        <div style="background:#F8FAFC;border:1px solid ${BDR};border-radius:8px;padding:14px 16px;font-family:Arial,sans-serif;font-size:13px;color:${INK};line-height:1.7">${d.description}</div>
+      </div>` : ""}
+      ${cta(d.app_url || "https://facilflow-v2-admin.vercel.app", "View & Assign Ticket →", B)}
+    `))
+  }),
+
+  // Sent to the submitter as a receipt confirming their ticket was received
+  ticket_received: (d) => ({
+    subject: `Ticket Received: ${d.ticket_id} — ${d.subject}`,
+    html: wrap(hdr(GRN, "Ticket Received", "Your support request has been logged") + body(`
+      ${p(`Hi there,`)}
+      ${p(`Your <strong>${d.type || "support"}</strong> ticket has been successfully submitted and is now in our queue. Our IT support team will review it shortly.`)}
+      <div style="background:${GBG};border:1px solid #6EE7B7;border-radius:10px;padding:20px;text-align:center;margin-bottom:20px">
+        <div style="font-family:Arial,sans-serif;font-size:11px;font-weight:700;color:${GRN};text-transform:uppercase;letter-spacing:1px;margin-bottom:6px">Your Ticket Reference</div>
+        <div style="font-family:Arial,sans-serif;font-size:28px;font-weight:900;color:#065F46;letter-spacing:-0.5px">${d.ticket_id}</div>
+        <div style="font-family:Arial,sans-serif;font-size:13px;color:${GRN};margin-top:6px">${d.subject}</div>
+      </div>
+      ${table(
+        row("Type",     d.type) +
+        row("Priority", (d.priority || "medium").charAt(0).toUpperCase() + (d.priority || "medium").slice(1)) +
+        row("Status",   "Open — Awaiting Assignment")
+      )}
+      ${hl("You will receive an email when your ticket is updated or when a support agent responds.", GRN, GBG)}
+      ${cta(d.app_url || "https://facilflowuser.vercel.app", "Track Your Ticket →", GRN)}
+    `))
+  }),
+
+  // Sent to the ticket requester when admin changes the ticket status
+  ticket_status_update: (d) => {
+    const statusColors = {
+      assigned:    { color: BLU, bg: BBG, label: "Assigned" },
+      in_progress: { color: BLU, bg: BBG, label: "In Progress" },
+      pending:     { color: AMB, bg: ABG, label: "Pending — Awaiting Info" },
+      resolved:    { color: GRN, bg: GBG, label: "Resolved" },
+      fulfilled:   { color: GRN, bg: GBG, label: "Fulfilled" },
+      closed:      { color: MUT, bg: BG,  label: "Closed" },
+      rejected:    { color: RED, bg: RBG, label: "Rejected" },
+    }
+    const s = statusColors[d.new_status] || { color: MUT, bg: BG, label: d.new_status || "Updated" }
+    const isResolved = ["resolved","fulfilled","closed"].includes(d.new_status)
+    return {
+      subject: `Your ticket ${d.ticket_id} has been ${s.label} — FaciliFlow`,
+      html: wrap(hdr(s.color, `Ticket ${s.label}`, `Update on your support ticket`) + body(`
+        ${p(`Hi there,`)}
+        ${p(`Your support ticket has been updated by <strong>${d.updated_by || "the support team"}</strong>.`)}
+        <div style="background:${s.bg};border:1px solid ${s.color}40;border-radius:10px;padding:18px 20px;text-align:center;margin-bottom:20px">
+          <div style="font-family:Arial,sans-serif;font-size:11px;font-weight:700;color:${s.color};text-transform:uppercase;letter-spacing:1px;margin-bottom:6px">New Status</div>
+          <div style="font-family:Arial,sans-serif;font-size:22px;font-weight:800;color:${s.color}">${s.label}</div>
+        </div>
+        ${table(row("Ticket ID", d.ticket_id) + row("Subject", d.subject) + row("Updated By", d.updated_by || "Support Team"))}
+        ${isResolved
+          ? hl("Your ticket has been resolved. If you feel the issue is not fully resolved, you can reopen it from the portal.", GRN, GBG)
+          : hl("You will continue to receive updates as your ticket progresses. You can also add follow-up comments from the portal.", BLU, BBG)}
+        ${cta(d.app_url || "https://facilflowuser.vercel.app", "View Your Ticket →", s.color)}
+      `))
+    }
+  },
+
+  // Sent to admins (when user comments) OR to user (when admin replies)
+  ticket_comment: (d) => ({
+    subject: `New reply on Ticket ${d.ticket_id}: ${d.subject}`,
+    html: wrap(hdr(BLU, "New Ticket Reply", `${d.commenter || "Someone"} has responded to the ticket`) + body(`
+      ${p(`<strong>${d.commenter || "A participant"}</strong> has added a reply to support ticket <strong>${d.ticket_id}</strong>.`)}
+      ${table(row("Ticket ID", d.ticket_id) + row("Subject", d.subject) + row("From", d.commenter))}
+      <div style="margin-bottom:20px">
+        <div style="font-family:Arial,sans-serif;font-size:11px;font-weight:700;color:${MUT};text-transform:uppercase;letter-spacing:0.8px;margin-bottom:8px">Message</div>
+        <div style="background:#F8FAFC;border-left:3px solid ${BLU};border-radius:0 8px 8px 0;padding:14px 16px;font-family:Arial,sans-serif;font-size:13px;color:${INK};line-height:1.7">${d.comment || ""}</div>
+      </div>
+      ${cta(d.app_url || "https://facilflowuser.vercel.app", "Reply to Ticket →", BLU)}
+    `))
+  }),
 }
 
 // ── HANDLER ───────────────────────────────────────────────

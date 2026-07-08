@@ -87,3 +87,43 @@ export const emailRequestApproved = (toEmail, req, type, approver) =>
     approver,
     app_url: APP_URL,
   })
+
+export const emailTicketCreated = (toEmails, ticket, raisedBy) =>
+  sendEmail('ticket_created', toEmails, {
+    ticket_id: ticket.id,
+    subject: ticket.subject,
+    type: ticket.type === 'incident' ? 'Incident' : 'Service Request',
+    priority: ticket.priority || 'medium',
+    category: [ticket.category, ticket.subcategory, ticket.item].filter(Boolean).join(' › ') || '—',
+    department: ticket.department || '—',
+    description: (ticket.description || '').slice(0, 400),
+    raised_by: raisedBy,
+    app_url: APP_URL,
+  })
+
+export const emailTicketComment = (toEmails, ticket, commenterName, commentBody) =>
+  sendEmail('ticket_comment', toEmails, {
+    ticket_id: ticket.id,
+    subject: ticket.subject,
+    commenter: commenterName,
+    comment: commentBody.slice(0, 600),
+    app_url: APP_URL,
+  })
+
+export const emailTicketReceived = (toEmail, ticket) =>
+  sendEmail('ticket_received', toEmail, {
+    ticket_id: ticket.id,
+    subject: ticket.subject,
+    type: ticket.type === 'incident' ? 'Incident' : 'Service Request',
+    priority: ticket.priority || 'medium',
+    app_url: APP_URL,
+  })
+
+export const emailTicketStatusUpdate = (toEmail, ticket, newStatus, updatedBy) =>
+  sendEmail('ticket_status_update', toEmail, {
+    ticket_id: ticket.id,
+    subject: ticket.subject,
+    new_status: newStatus,
+    updated_by: updatedBy,
+    app_url: APP_URL,
+  })

@@ -1,5 +1,6 @@
 import { supabase } from "./lib/supabase.js";
-import { fetchUsers, updateUser, deleteUser, fetchVehicles, createVehicle, updateVehicle, fetchDrivers, createDriver, updateDriver, fetchInventory, createInventoryItem, updateInventoryItem, fetchRequests, updateRequest, fetchCRs, updateCR, fetchAuditLog, addAuditEntry, fetchChangeRoles, fetchUserChangeRoles, assignChangeRole, removeChangeRole, fetchApprovalLevels, saveApprovalLevel, deleteApprovalLevel, fetchTenantConfig, saveTenantConfig, fetchVehicleDocs, upsertVehicleDoc, uploadVehicleDoc, fetchSubscriptions, createSubscription, updateSubscription, uploadSubInvoice } from "./lib/supabase.js";
+import { emailTicketCreated, emailTicketStatusUpdate, emailTicketComment } from "./lib/email.js";
+import { fetchUsers, updateUser, deleteUser, fetchVehicles, createVehicle, updateVehicle, fetchDrivers, createDriver, updateDriver, fetchInventory, createInventoryItem, updateInventoryItem, fetchRequests, updateRequest, fetchCRs, updateCR, fetchAuditLog, addAuditEntry, fetchChangeRoles, fetchUserChangeRoles, assignChangeRole, removeChangeRole, fetchApprovalLevels, saveApprovalLevel, deleteApprovalLevel, fetchTenantConfig, saveTenantConfig, fetchVehicleDocs, upsertVehicleDoc, uploadVehicleDoc, fetchSubscriptions, createSubscription, updateSubscription, uploadSubInvoice, fetchTickets, updateTicket, fetchTicketComments, addTicketComment, fetchAssets, createAsset, updateAsset, fetchTicketCategories } from "./lib/supabase.js";
 import React, { useState, useMemo, useCallback, useEffect } from "react";
 
 /* =========================================================
@@ -47,6 +48,7 @@ const inp = (err=false) => ({
 const card = (p=16) => ({
   background:"#fff", border:`1px solid ${C.border}`,
   borderRadius:10, padding:p, boxShadow:"0 1px 3px rgba(0,0,0,.05)",
+  ...(p===0?{overflowX:"auto"}:{}),
 });
 
 const LBL = { fontSize:11, fontWeight:700, color:C.muted, textTransform:"uppercase",
@@ -221,6 +223,15 @@ const normDrv = d  => d  ? ({...d,  vehicleId:d.vehicle_id??d.vehicleId, lastUpd
 const normInv = i  => i  ? ({...i,  desc:i.description??i.desc, lastUpdated:i.updated_at??i.lastUpdated, createdAt:i.created_at??i.createdAt }) : i;
 const normAudit = a => a ? ({...a,  at:a.created_at??a.at, by:a.performed_by??a.by }) : a;
 const fmtSafe = d => { if(!d) return "—"; const dt = new Date(d); return isNaN(dt) ? "—" : dt.toLocaleDateString("en-GB",{day:"2-digit",month:"short",year:"numeric"}); };
+const normTicket = t => t ? ({...t, title:t.subject??t.title, ticketType:t.ticket_type??t.ticketType??t.type, priorityAuto:t.priority_auto??t.priorityAuto, impactDetails:t.impact_details??t.impactDetails, requesterId:t.requester_id??t.requesterId, assigneeId:t.assignee_id??t.assigneeId, productService:t.product_service??t.productService, supportLevel:t.support_level??t.supportLevel, assetId:t.asset_id??t.assetId, assetFreeText:t.asset_free_text??t.assetFreeText, linkedCrId:t.linked_cr_id??t.linkedCrId, resolutionNotes:t.resolution_notes??t.resolutionNotes, resolutionStatus:t.resolution_status??t.resolutionStatus, rootCause:t.root_cause??t.rootCause, resolvedAt:t.resolved_at??t.resolvedAt, closedAt:t.closed_at??t.closedAt, createdAt:t.created_at??t.createdAt, updatedAt:t.updated_at??t.updatedAt }) : t;
+
+const TICKET_STATUS = { open:{label:"Open",color:C.amber,bg:C.amberBg}, assigned:{label:"Assigned",color:C.blue,bg:C.blueBg}, in_progress:{label:"In Progress",color:C.blue,bg:C.blueBg}, pending:{label:"Pending",color:C.muted,bg:C.surface}, approved:{label:"Approved",color:C.green,bg:C.greenBg}, resolved:{label:"Resolved",color:C.green,bg:C.greenBg}, fulfilled:{label:"Fulfilled",color:C.green,bg:C.greenBg}, closed:{label:"Closed",color:C.muted,bg:C.surface}, rejected:{label:"Rejected",color:C.red,bg:C.redBg} };
+const TICKET_PRIORITY = { critical:{label:"Critical",color:C.red,bg:C.redBg}, high:{label:"High",color:C.amber,bg:C.amberBg}, medium:{label:"Medium",color:C.blue,bg:C.blueBg}, low:{label:"Low",color:C.green,bg:C.greenBg} };
+const TChip = ({s})=>{ const m=TICKET_STATUS[s]||{label:s,color:C.muted,bg:"#F8FAFC"}; return <Chip label={m.label} color={m.color} bg={m.bg}/>; };
+const PChip = ({p})=>{ const m=TICKET_PRIORITY[p]||{label:p,color:C.muted,bg:"#F8FAFC"}; return <Chip label={m.label} color={m.color} bg={m.bg}/>; };
+
+const ASSET_STATUS = { new:{label:"New",color:C.violet,bg:C.violetBg}, in_store:{label:"In Store",color:C.teal,bg:C.tealBg}, available:{label:"Available",color:C.green,bg:C.greenBg}, assigned:{label:"Assigned",color:C.blue,bg:C.blueBg}, in_repair:{label:"In Repair",color:C.amber,bg:C.amberBg}, condemned:{label:"Condemned",color:C.red,bg:C.redBg}, bidded:{label:"Bidded",color:C.orange,bg:C.orangeBg}, retired:{label:"Retired",color:C.muted,bg:C.surface}, lost:{label:"Lost",color:C.red,bg:C.redBg} };
+const AChip = ({s})=>{ const m=ASSET_STATUS[s]||{label:s,color:C.muted,bg:"#F8FAFC"}; return <Chip label={m.label} color={m.color} bg={m.bg}/>; };
 
 // ── ATOMS ──────────────────────────────────────────────────────
 const Av = ({i,s=30,bg=C.brand}) => (
@@ -246,8 +257,13 @@ function Toast({t}){
 }
 
 function Modal({title,sub,onClose,children,w=640}){
+  useEffect(()=>{
+    const handler=(e)=>{ if(e.key==="Escape") onClose(); };
+    window.addEventListener("keydown",handler);
+    return ()=>window.removeEventListener("keydown",handler);
+  },[onClose]);
   return (
-    <div style={{position:"fixed",inset:0,background:"rgba(15,23,42,.5)",zIndex:800,display:"flex",alignItems:"center",justifyContent:"center",padding:16,backdropFilter:"blur(3px)"}} onClick={e=>e.target===e.currentTarget&&onClose()}>
+    <div style={{position:"fixed",inset:0,background:"rgba(15,23,42,.5)",zIndex:800,display:"flex",alignItems:"center",justifyContent:"center",padding:16,backdropFilter:"blur(3px)"}}>
       <div style={{...card(0),width:w,maxWidth:"96vw",maxHeight:"92vh",display:"flex",flexDirection:"column",borderRadius:12}}>
         <div style={{padding:"16px 22px",borderBottom:`1px solid ${C.border}`,display:"flex",justifyContent:"space-between",alignItems:"center",flexShrink:0}}>
           <div><div style={{fontSize:15,fontWeight:700,color:C.ink}}>{title}</div>{sub&&<div style={{fontSize:12,color:C.muted,marginTop:1}}>{sub}</div>}</div>
@@ -342,6 +358,8 @@ const NAV = [
   ]},
   {group:"IT Management", roles:["super_admin","it_admin"], items:[
     {k:"it_subscriptions",l:"IT Subscriptions", icon:"💳"},
+    {k:"helpdesk",        l:"Helpdesk",         icon:"🎫"},
+    {k:"asset_registry",  l:"Asset Registry",   icon:"💻"},
   ]},
   {group:"System", roles:["super_admin"], items:[
     {k:"notifications",l:"Notifications",  icon:"🔔"},
@@ -367,6 +385,9 @@ export default function AdminApp({ currentUser }){
   const [tenantConfig,  setTenantConfig]  = useState(null);
   const [vehicleDocs, setVehicleDocs] = useState([]);
   const [subscriptions, setSubs]      = useState([]);
+  const [tickets,    setTickets]   = useState([]);
+  const [assets,     setAssets]    = useState([]);
+  const [ticketCats, setTicketCats]= useState([]);
   const [toast,     setToast]    = useState(null);
   const [loading,   setLoading]  = useState(true);
 
@@ -405,6 +426,11 @@ export default function AdminApp({ currentUser }){
       setSubs((subs||[]).map(normSub));
     }).catch(e=>console.warn("Compliance/subscription data load:", e.message));
 
+    // Load helpdesk and asset data (non-fatal — tables may not exist yet)
+    Promise.all([fetchTickets(tid), fetchAssets(tid), fetchTicketCategories(tid)])
+      .then(([tix,ast,cats])=>{ setTickets((tix||[]).map(normTicket)); setAssets(ast||[]); setTicketCats(cats||[]); })
+      .catch(e=>console.warn("Helpdesk/Asset data load:", e.message));
+
     // Load change management config (non-fatal)
     Promise.all([
       fetchChangeRoles(),
@@ -436,6 +462,12 @@ export default function AdminApp({ currentUser }){
     } catch(e){ console.error("Audit error:",e); }
   },[tid,uid]);
 
+  const updateTicketFn  = useCallback(async(id,upd)=>{ const saved=await updateTicket(id,upd); const n=normTicket(saved); setTickets(p=>p.map(t=>t.id===id?n:t)); return n; },[]);
+  const createAssetFn   = useCallback(async(data)=>{ const saved=await createAsset({...data,tenant_id:tid}); setAssets(p=>[...p,saved]); return saved; },[tid]);
+  const updateAssetFn   = useCallback(async(id,upd)=>{ const saved=await updateAsset(id,upd); setAssets(p=>p.map(a=>a.id===id?saved:a)); return saved; },[]);
+  const addCommentFn    = useCallback(async(comment)=>addTicketComment(comment),[]);
+  const fetchCommentsFn = useCallback(async(ticketId)=>fetchTicketComments(ticketId),[]);
+
   if(loading) return (
     <div style={{minHeight:"100vh",display:"flex",alignItems:"center",justifyContent:"center",
       fontFamily:"system-ui",color:C.muted,fontSize:14,background:C.pageBg}}>
@@ -463,6 +495,8 @@ export default function AdminApp({ currentUser }){
     tenantConfig, setTenantConfig,
     vehicleDocs, setVehicleDocs,
     subscriptions, setSubs,
+    tickets, setTickets, assets, setAssets, ticketCats, setTicketCats,
+    updateTicketFn, createAssetFn, updateAssetFn, addCommentFn, fetchCommentsFn,
   };
 
   return (
@@ -541,6 +575,8 @@ export default function AdminApp({ currentUser }){
           {page==="cr_policy"       && (hasAdminAccess(me,["super_admin","it_admin"])       ? <CRPolicy     ctx={ctx}/> : <AccessDenied/>)}
           {page==="change_config"   && (hasAdminAccess(me,["super_admin","it_admin"])       ? <ChangeConfig ctx={ctx}/> : <AccessDenied/>)}
           {page==="it_subscriptions" && (hasAdminAccess(me,["super_admin","it_admin"])       ? <ITSubscriptions ctx={ctx}/> : <AccessDenied/>)}
+          {page==="helpdesk"       && (hasAdminAccess(me,["super_admin","it_admin"])        ? <HelpdeskAdmin ctx={ctx}/> : <AccessDenied/>)}
+          {page==="asset_registry" && (hasAdminAccess(me,["super_admin","it_admin"])        ? <AssetRegistry ctx={ctx}/> : <AccessDenied/>)}
           {page==="notifications"   && (hasAdminAccess(me,["super_admin"])                  ? <NotifPolicy  ctx={ctx}/> : <AccessDenied/>)}
           {page==="audit"           && (hasAdminAccess(me,["super_admin"])                  ? <AuditLog     ctx={ctx}/> : <AccessDenied/>)}
         </main>
@@ -669,7 +705,7 @@ function AdminDash({ctx,setPage}){
 // FACILITY REQUESTS MANAGEMENT
 // ══════════════════════════════════════════════════════════════
 function RequestsMgmt({ctx}){
-  const {requests,setRequests,users,vehicles,drivers,inventory,addAudit,flash,uid}=ctx;
+  const {requests,setRequests,users,vehicles,setVehicles,drivers,inventory,setInv,addAudit,flash,uid}=ctx;
 
   // ── FILTER STATE ─────────────────────────────────────────
   const [search,    setSearch]    = useState("");
@@ -734,6 +770,17 @@ function RequestsMgmt({ctx}){
   const actionReq = async (id, newStatus, note="") => {
     try {
       const req = allReqs.find(r=>r.id===id);
+      // Stock availability check before approving stationery requests
+      if(newStatus==="approved" && req.type!=="pool_car"){
+        const items=req.details?.items||[];
+        for(const it of items){
+          const inv=(inventory||[]).find(x=>x.id===it.id);
+          if(inv && inv.stock<(it.qty||1)){
+            flash(`Insufficient stock for "${inv.name}": ${inv.stock} available, ${it.qty} requested`,"error");
+            return;
+          }
+        }
+      }
       const now = new Date().toISOString();
       const history = [...(req.history||[]), {s:newStatus, at:now, by:uid, note}];
       const updates = {
@@ -822,6 +869,20 @@ function RequestsMgmt({ctx}){
       if(isCarReq && req.assigned_vehicle){
         await updateVehicle(req.assigned_vehicle, {status:"available"});
         setVehicles(p=>p.map(v=>v.id===req.assigned_vehicle ? {...v,status:"available"} : v));
+      }
+      // Deduct inventory stock for stationery requests on delivery
+      if(!isCarReq){
+        const items=req.details?.items||[];
+        for(const it of items){
+          const inv=(inventory||[]).find(x=>x.id===it.id);
+          if(inv){
+            const ns=Math.max(0,inv.stock-(it.qty||1));
+            try{
+              await updateInventoryItem(inv.id,{stock:ns});
+              setInv(p=>p.map(i=>i.id!==inv.id?i:{...i,stock:ns}));
+            }catch(e){ flash(`Stock update failed for "${inv.name}": ${e.message}`,"error"); }
+          }
+        }
       }
       setRequests(p=>p.map(r=>r.id===id ? saved : r));
       addAudit("REQUEST_DELIVERED", id, `Request ${id} marked ${statusLabel}`);
@@ -1273,7 +1334,8 @@ function UserMgmt({ctx}){
 
   const shown=users.filter(u=>{
     if(f.role){
-      const allRoles=[u.role,...(u.admin_roles||[])];
+      const isAdm=ADMIN_ROLE_TYPES.includes(u.role)||u.role==="admin";
+      const allRoles=isAdm?getAdminRoles(u):[u.role];
       if(!allRoles.includes(f.role))return false;
     }
     if(f.status&&u.status!==f.status)return false;
@@ -1302,26 +1364,29 @@ function UserMgmt({ctx}){
       addAudit("USER_DELETED",id,"User deleted");flash("User deleted");setConfirm(null);
     }catch(e){flash(e.message,"error");}
   };
-  const invite=async(email,name,role,dept,tempPassword,adminRoles=[])=>{
+  const invite=async(email,name,role,dept,tempPassword,adminRoles=[],firstName="",lastName="")=>{
     try{
       const isAdminRole = ADMIN_ROLE_TYPES.includes(role);
       const redirectTo  = isAdminRole
         ? "https://facilflow-v2-admin.vercel.app"
         : "https://facilflowuser.vercel.app";
-      const primaryRole = isAdminRole ? role : role;
 
       const { data, error } = await supabase.functions.invoke("invite-user", {
-        body: { email, name, role:primaryRole, dept, tenant_id:tid, temp_password:tempPassword, redirect_to:redirectTo }
+        body: { email, name, role, dept, tenant_id:tid, temp_password:tempPassword, redirect_to:redirectTo }
       });
       if(error) throw error;
       if(data.error) throw new Error(data.error);
 
-      // If multiple admin roles, persist them
-      if(isAdminRole && adminRoles.length > 1){
-        try{ await updateUser(data.user.id, {admin_roles:adminRoles}); } catch(_){}
+      // Persist split names + any extra admin roles
+      const nameUpdates = {};
+      if(firstName) nameUpdates.first_name = firstName;
+      if(lastName)  nameUpdates.last_name  = lastName;
+      if(isAdminRole && adminRoles.length > 1) nameUpdates.admin_roles = adminRoles;
+      if(Object.keys(nameUpdates).length){
+        try{ await updateUser(data.user.id, nameUpdates); } catch(_){}
       }
 
-      setUsers(p=>[...p, {...data.user, admin_roles:adminRoles}]);
+      setUsers(p=>[...p, {...data.user, admin_roles:adminRoles, first_name:firstName, last_name:lastName}]);
       const roleLabel = adminRoles.length>1 ? adminRoles.map(r=>ADMIN_ROLE_META[r]?.label||r).join(", ") : role;
       addAudit("USER_INVITED", email, `${name} invited as ${roleLabel}`);
       flash(`Invitation sent to ${email}`);
@@ -1332,7 +1397,7 @@ function UserMgmt({ctx}){
       await updateUser(id,data);
       setUsers(p=>p.map(u=>u.id!==id?u:{...u,...data}));
       addAudit("USER_UPDATED",id,"User details updated");flash("User updated");
-    }catch(e){flash(e.message,"error");}
+    }catch(e){flash(e.message,"error");throw e;}
   };
 
   return (
@@ -1398,7 +1463,7 @@ function UserMgmt({ctx}){
       </div>
 
       {/* Invite / Add modal */}
-      {modal==="add"&&<InviteModal onClose={()=>setModal(null)} onInvite={(email,name,role,dept,pw,adminRoles)=>invite(email,name,role,dept,pw,adminRoles)}/>}
+      {modal==="add"&&<InviteModal onClose={()=>setModal(null)} onInvite={(email,name,role,dept,pw,adminRoles,fn,ln)=>invite(email,name,role,dept,pw,adminRoles,fn,ln)}/>}
       {modal?.edit&&<EditUserModal user={modal.edit} onClose={()=>setModal(null)} onSave={updateUserLocal}/>}
 
       {/* Confirm modal */}
@@ -1411,7 +1476,7 @@ function UserMgmt({ctx}){
           </div>
           <div style={{display:"flex",justifyContent:"flex-end",gap:8}}>
             <button onClick={()=>setConfirm(null)} style={btn("ghost")}>Cancel</button>
-            <button onClick={()=>confirm.type==="delete"?deleteUser(confirm.user.id):suspend(confirm.user.id)}
+            <button onClick={()=>confirm.type==="delete"?removeUser(confirm.user.id):suspend(confirm.user.id)}
               style={btn(confirm.type==="delete"?"danger":"amber")}>
               {confirm.type==="delete"?"Delete User":"Suspend User"}
             </button>
@@ -1423,8 +1488,9 @@ function UserMgmt({ctx}){
 }
 
 function InviteModal({onClose,onInvite}){
+  const [firstName,  setFirstName] = useState("");
+  const [lastName,   setLastName]  = useState("");
   const [email,      setEmail]     = useState("");
-  const [name,       setName]      = useState("");
   const [roleType,   setRoleType]  = useState("staff"); // "staff" | "admin"
   const [staffRole,  setStaffRole] = useState("employee");
   const [adminRoles, setAdminRoles]= useState(["facility_admin"]);
@@ -1443,13 +1509,15 @@ function InviteModal({onClose,onInvite}){
 
   const go=()=>{
     setErr("");
-    if(!email)  return setErr("Email is required.");
-    if(!name)   return setErr("Full name is required.");
+    if(!firstName.trim()) return setErr("First name is required.");
+    if(!lastName.trim())  return setErr("Last name is required.");
+    if(!email)            return setErr("Email is required.");
     if(password.length < 8) return setErr("Temporary password must be at least 8 characters.");
     if(password !== confirm) return setErr("Passwords do not match.");
     if(roleType==="admin" && adminRoles.length===0) return setErr("Select at least one admin role.");
+    const fullName = `${firstName.trim()} ${lastName.trim()}`;
     const primaryRole = roleType==="admin" ? adminRoles[0] : staffRole;
-    onInvite(email, name, primaryRole, dept, password, roleType==="admin" ? adminRoles : []);
+    onInvite(email, fullName, primaryRole, dept, password, roleType==="admin" ? adminRoles : [], firstName.trim(), lastName.trim());
     onClose();
   };
 
@@ -1457,12 +1525,16 @@ function InviteModal({onClose,onInvite}){
     <Modal title="Invite New User" sub="User will receive an email to access the platform" onClose={onClose} w={520}>
       <div style={{display:"flex",flexDirection:"column",gap:14}}>
         <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:14}}>
-          <div style={{gridColumn:"1/-1"}}>
-            <label style={LBL}>Full Name</label>
-            <input value={name} onChange={e=>setName(e.target.value)} style={inp()} placeholder="e.g. Adaeze Okonkwo"/>
+          <div>
+            <label style={LBL}>First Name *</label>
+            <input value={firstName} onChange={e=>setFirstName(e.target.value)} style={inp()} placeholder="e.g. Adaeze"/>
+          </div>
+          <div>
+            <label style={LBL}>Last Name *</label>
+            <input value={lastName} onChange={e=>setLastName(e.target.value)} style={inp()} placeholder="e.g. Okonkwo"/>
           </div>
           <div style={{gridColumn:"1/-1"}}>
-            <label style={LBL}>Email Address</label>
+            <label style={LBL}>Email Address *</label>
             <input value={email} onChange={e=>setEmail(e.target.value)} style={inp()} placeholder="user@africaprudential.com"/>
           </div>
         </div>
@@ -1546,11 +1618,15 @@ function EditUserModal({user,onClose,onSave}){
   const isAdminUser = ADMIN_ROLE_TYPES.includes(user.role) || user.role==="admin";
   const initialAdminRoles = isAdminUser ? getAdminRoles(user) : [];
 
-  const [name,       setName]      = useState(user.name);
+  // Split existing name into first/last (everything after first space = last name)
+  const nameParts = (user.name||"").trim().split(/\s+/);
+  const [firstName,  setFirstName] = useState(nameParts[0]||"");
+  const [lastName,   setLastName]  = useState(nameParts.slice(1).join(" ")||"");
   const [dept,       setDept]      = useState(user.dept);
   const [staffRole,  setStaffRole] = useState(isAdminUser ? "employee" : user.role);
   const [adminRoles, setAdminRoles]= useState(initialAdminRoles.length ? initialAdminRoles : ["facility_admin"]);
   const [isAdmin,    setIsAdmin]   = useState(isAdminUser);
+  const [saving,     setSaving]    = useState(false);
 
   const toggleAdminRole = (r) => {
     setAdminRoles(prev =>
@@ -1558,24 +1634,38 @@ function EditUserModal({user,onClose,onSave}){
     );
   };
 
-  const save=()=>{
+  const save=async()=>{
+    if(!firstName.trim()) return;
     const primaryRole = isAdmin ? adminRoles[0] : staffRole;
+    const fullName = lastName.trim() ? `${firstName.trim()} ${lastName.trim()}` : firstName.trim();
     const updates = {
-      name,
+      name:       fullName,
+      first_name: firstName.trim(),
+      last_name:  lastName.trim(),
       dept,
       role: primaryRole,
       admin_roles: isAdmin ? adminRoles : [],
     };
-    onSave(user.id, updates);
-    onClose();
+    setSaving(true);
+    try{
+      await onSave(user.id, updates);
+      onClose();
+    }catch(_){ /* error already flashed by updateUserLocal */ }
+    finally{ setSaving(false); }
   };
 
   return (
-    <Modal title="Edit User" sub={user.email} onClose={onClose} w={480}>
+    <Modal title="Edit User" sub={user.email} onClose={onClose} w={520}>
       <div style={{display:"flex",flexDirection:"column",gap:14}}>
-        <div>
-          <label style={LBL}>Full Name</label>
-          <input value={name} onChange={e=>setName(e.target.value)} style={inp()}/>
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:14}}>
+          <div>
+            <label style={LBL}>First Name *</label>
+            <input value={firstName} onChange={e=>setFirstName(e.target.value)} style={inp()}/>
+          </div>
+          <div>
+            <label style={LBL}>Last Name</label>
+            <input value={lastName} onChange={e=>setLastName(e.target.value)} style={inp()}/>
+          </div>
         </div>
 
         {/* Account type switcher */}
@@ -1630,8 +1720,8 @@ function EditUserModal({user,onClose,onSave}){
         </div>
       </div>
       <div style={{display:"flex",justifyContent:"flex-end",gap:8,marginTop:18,paddingTop:16,borderTop:`1px solid ${C.border}`}}>
-        <button onClick={onClose} style={btn("ghost")}>Cancel</button>
-        <button onClick={save} style={btn("primary")}>Save Changes</button>
+        <button onClick={onClose} style={btn("ghost")} disabled={saving}>Cancel</button>
+        <button onClick={save} style={btn("primary")} disabled={saving}>{saving?"Saving…":"Save Changes"}</button>
       </div>
     </Modal>
   );
@@ -1664,6 +1754,10 @@ function FleetMgmt({ctx}){
   };
 
   const assignDriver=async(vId,dId)=>{
+    if(dId){
+      const alreadyOn=vehicles.find(v=>v.id!==vId&&v.driverId===dId);
+      if(alreadyOn){ flash(`Driver is already assigned to ${alreadyOn.plate}. Remove them first.`,"error"); return; }
+    }
     try{
       await updateVehicle(vId,{driver_id:dId||null});
       setVehicles(p=>p.map(v=>v.id!==vId?v:normVeh({...v,driver_id:dId||null})));
@@ -1673,8 +1767,14 @@ function FleetMgmt({ctx}){
 
   const saveVehicle=async(data,existing)=>{
     try{
+      const plateTrimmed=(data.plate||"").trim().toUpperCase();
+      if(!plateTrimmed||!data.model){ flash("Plate number and model are required","error"); return; }
+      if(!existing){
+        const dup=vehicles.find(v=>v.plate.trim().toUpperCase()===plateTrimmed);
+        if(dup){ flash(`Plate number ${plateTrimmed} already exists on ${dup.model}`,"error"); return; }
+      }
       const rec={
-        plate:data.plate, model:data.model, year:data.year, color:data.color,
+        plate:plateTrimmed, model:data.model, year:data.year, color:data.color,
         ownership_type:data.ownershipType||"Company",
         company_name:data.companyName||"",
         co_owner_name:data.ownershipType==="Joint"?data.coOwnerName||"":null,
@@ -1768,7 +1868,7 @@ function FleetMgmt({ctx}){
                       <select value={v.driverId||""} onChange={e=>assignDriver(v.id,e.target.value)}
                         style={{border:`1px solid ${C.border}`,borderRadius:6,padding:"4px 8px",fontSize:11,cursor:"pointer",fontFamily:"inherit",background:"#fff",minWidth:130}}>
                         <option value="">— Unassigned —</option>
-                        {drivers.filter(d=>d.status==="available"||d.id===v.driverId).map(d=><option key={d.id} value={d.id}>{d.name}</option>)}
+                        {drivers.filter(d=>{const assignedTo=vehicles.find(vv=>vv.driverId===d.id);return !assignedTo||assignedTo.id===v.id;}).map(d=><option key={d.id} value={d.id}>{d.name}{d.status==="suspended"?" (suspended)":""}</option>)}
                       </select>
                     </td>
                     <td style={{padding:"11px 14px"}}>
@@ -1843,16 +1943,18 @@ function VehicleDocRow({docType,vehicle,doc,onSave,onUpload}){
   const [expiry,setExpiry]   = useState(doc?.expiry_date||"");
   const [file,setFile]       = useState(null);
   const [saving,setSaving]   = useState(false);
+  const [err,setErr]         = useState("");
   const st = docStatus(doc?.expiry_date);
 
   const submit = async () => {
-    if(!expiry) return;
-    setSaving(true);
+    if(!expiry){ setErr("Expiry date is required."); return; }
+    setErr(""); setSaving(true);
     try{
       if(file) await onUpload(vehicle.id,docType,file,expiry);
       else     await onSave(vehicle.id,docType,expiry,doc?.attachment_url||null);
       setEditing(false); setFile(null);
-    }finally{setSaving(false);}
+    }catch(e){ setErr(e.message||"Upload failed. Please try again."); }
+    finally{setSaving(false);}
   };
 
   return (
@@ -1872,18 +1974,21 @@ function VehicleDocRow({docType,vehicle,doc,onSave,onUpload}){
         <button onClick={()=>setEditing(e=>!e)} style={{...btn("ghost"),fontSize:11,padding:"4px 8px"}}>{editing?"Cancel":"Edit"}</button>
       </div>
       {editing&&(
-        <div style={{padding:"14px",borderTop:`1px solid ${C.border}`,background:"#fff",display:"grid",gridTemplateColumns:"1fr 1fr auto",gap:12,alignItems:"flex-end"}}>
-          <div>
-            <label style={LBL}>Expiry Date</label>
-            <input type="date" value={expiry} onChange={e=>setExpiry(e.target.value)} style={inp()}/>
+        <div style={{padding:"14px",borderTop:`1px solid ${C.border}`,background:"#fff"}}>
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr auto",gap:12,alignItems:"flex-end"}}>
+            <div>
+              <label style={LBL}>Expiry Date <span style={{color:C.red}}>*</span></label>
+              <input type="date" value={expiry} onChange={e=>{setExpiry(e.target.value);setErr("");}} style={inp(!expiry&&!!err)}/>
+            </div>
+            <div>
+              <label style={LBL}>Attachment (optional)</label>
+              <input type="file" onChange={e=>setFile(e.target.files[0]||null)} style={{...inp(),padding:"5px 8px",fontSize:11,cursor:"pointer"}}/>
+            </div>
+            <button onClick={submit} disabled={saving} style={{...btn("primary"),alignSelf:"flex-end"}}>
+              {saving?"Saving…":"Save"}
+            </button>
           </div>
-          <div>
-            <label style={LBL}>Attachment (optional)</label>
-            <input type="file" onChange={e=>setFile(e.target.files[0]||null)} style={{...inp(),padding:"5px 8px",fontSize:11,cursor:"pointer"}}/>
-          </div>
-          <button onClick={submit} disabled={saving||!expiry} style={{...btn("primary"),alignSelf:"flex-end"}}>
-            {saving?"Saving…":"Save"}
-          </button>
+          {err&&<div style={{fontSize:11,color:C.red,fontWeight:600,marginTop:8}}>⚠ {err}</div>}
         </div>
       )}
     </div>
@@ -1906,14 +2011,20 @@ function DriverRoster({ctx}){
 
   const save=async d=>{
     try{
+      const licTrimmed=(d.license||"").trim();
+      if(!d.name?.trim()||!licTrimmed){ flash("Name and licence number are required","error"); return; }
+      // Licence uniqueness check
+      const dupLic=drivers.find(dr=>dr.license.trim().toLowerCase()===licTrimmed.toLowerCase()&&dr.id!==d.id);
+      if(dupLic){ flash(`Licence ${licTrimmed} is already registered to ${dupLic.name}`,"error"); return; }
+
       if(d.id){
-        const saved=await updateDriver(d.id,{name:d.name,license:d.license,phone:d.phone,status:d.status,vehicle_id:d.vehicleId||null});
-        setDrivers(p=>p.map(r=>r.id!==d.id?r:saved));
+        const saved=await updateDriver(d.id,{name:d.name.trim(),license:licTrimmed,phone:d.phone,status:d.status,vehicle_id:d.vehicleId||null});
+        setDrivers(p=>p.map(r=>r.id!==d.id?r:normDrv(saved)));
         addAudit("DRIVER_UPDATED",d.id,"Driver details updated");flash("Driver updated");
       } else {
-        const rec={...d,id:genId("DRV"),tenant_id:tid,vehicle_id:d.vehicleId||null};
+        const rec={name:d.name.trim(),license:licTrimmed,phone:d.phone,status:d.status,id:genId("DRV"),tenant_id:tid,vehicle_id:d.vehicleId||null};
         const saved=await createDriver(rec);
-        setDrivers(p=>[...p,saved]);
+        setDrivers(p=>[...p,normDrv(saved)]);
         addAudit("DRIVER_ADDED",saved.id,`Driver ${d.name} registered`);flash("Driver added");
       }
     }catch(e){flash(e.message,"error");}
@@ -2104,6 +2215,8 @@ function ItemModal({item,onClose,onSave}){
 function StockModal({item,onClose,onSave}){
   const [qty,setQty]=useState(1);
   const [op,setOp]=useState("add");
+  const removeErr=op==="remove"&&qty>item.stock;
+  const newStock=op==="add"?item.stock+qty:item.stock-qty;
   return (
     <Modal title="Adjust Stock" sub={item.name} onClose={onClose} w={400}>
       <div style={{marginBottom:14,display:"flex",gap:10}}>
@@ -2120,14 +2233,21 @@ function StockModal({item,onClose,onSave}){
         <span style={{fontWeight:800,color:C.ink}}>{item.stock} {item.unit}s</span>
       </div>
       <div><label style={LBL}>Quantity to {op==="add"?"add":"remove"}</label>
-        <input type="number" min={1} value={qty} onChange={e=>setQty(+e.target.value)} style={inp()}/>
+        <input type="number" min={1} max={op==="remove"?item.stock:undefined} value={qty}
+          onChange={e=>setQty(Math.max(1,+e.target.value))} style={inp(removeErr)}/>
       </div>
-      <div style={{marginTop:10,padding:"10px 13px",borderRadius:7,background:op==="add"?C.greenBg:C.redBg,fontSize:13,fontWeight:600,color:op==="add"?C.green:C.red}}>
-        New stock: {op==="add"?item.stock+qty:Math.max(0,item.stock-qty)} {item.unit}s
-      </div>
+      {removeErr
+        ?<div style={{marginTop:8,padding:"9px 12px",borderRadius:7,background:C.redBg,fontSize:12,color:C.red,fontWeight:600}}>
+           ⚠ Cannot remove {qty} — only {item.stock} in stock. Adjust quantity.
+         </div>
+        :<div style={{marginTop:10,padding:"10px 13px",borderRadius:7,background:op==="add"?C.greenBg:C.redBg,fontSize:13,fontWeight:600,color:op==="add"?C.green:C.red}}>
+           New stock: {newStock} {item.unit}s
+         </div>
+      }
       <div style={{display:"flex",justifyContent:"flex-end",gap:8,marginTop:18,paddingTop:16,borderTop:`1px solid ${C.border}`}}>
         <button onClick={onClose} style={btn("ghost")}>Cancel</button>
-        <button onClick={()=>{onSave(item.id,qty,op);onClose()}} style={btn(op==="add"?"success":"danger")}>Confirm</button>
+        <button onClick={()=>{if(removeErr)return;onSave(item.id,qty,op);onClose()}} disabled={removeErr}
+          style={{...btn(op==="add"?"success":"danger"),opacity:removeErr?0.5:1}}>Confirm</button>
       </div>
     </Modal>
   );
@@ -2992,27 +3112,48 @@ function ChangeConfig({ctx}){
 // ══════════════════════════════════════════════════════════════
 // NOTIFICATION POLICY
 // ══════════════════════════════════════════════════════════════
+const DEFAULT_TRIGGERS=[
+  {id:"T1",event:"CR Submitted",      enabled:true, channels:["email","in_app"],  template:"A new change request {cr_id} has been submitted by {user}.",   reminder:24},
+  {id:"T2",event:"CR Approved (L1)",  enabled:true, channels:["email","in_app"],  template:"Change request {cr_id} has received L1 approval from {approver}.", reminder:0},
+  {id:"T3",event:"CR Approved (L2)",  enabled:true, channels:["email"],           template:"Change request {cr_id} has received L2 approval. Awaiting review.", reminder:0},
+  {id:"T4",event:"CR Scheduled",      enabled:true, channels:["email","in_app"],  template:"{cr_id} has been scheduled for deployment on {date} at {time}.",reminder:48},
+  {id:"T5",event:"CR Rejected",       enabled:true, channels:["email","in_app"],  template:"Your change request {cr_id} has been rejected. Reason: {reason}.", reminder:0},
+  {id:"T6",event:"Reminder: Approval",enabled:true, channels:["email"],           template:"Reminder: Change request {cr_id} is awaiting your approval.",     reminder:12},
+  {id:"T7",event:"Low Inventory",     enabled:true, channels:["in_app"],          template:"{item} is running low on stock ({qty} remaining).",               reminder:72},
+  {id:"T8",event:"Fleet Status Change",enabled:false,channels:["in_app"],         template:"Vehicle {plate} status changed to {status} by {user}.",           reminder:0},
+];
+
 function NotifPolicy({ctx}){
-  const {flash}=ctx;
-  const [triggers,setTriggers]=useState([
-    {id:"T1",event:"CR Submitted",      enabled:true, channels:["email","in_app"],  template:"A new change request {cr_id} has been submitted by {user}.",   reminder:24},
-    {id:"T2",event:"CR Approved (L1)",  enabled:true, channels:["email","in_app"],  template:"Change request {cr_id} has received L1 approval from {approver}.", reminder:0},
-    {id:"T3",event:"CR Approved (L2)",  enabled:true, channels:["email"],           template:"Change request {cr_id} has received L2 approval. Awaiting review.", reminder:0},
-    {id:"T4",event:"CR Scheduled",      enabled:true, channels:["email","in_app"],  template:"{cr_id} has been scheduled for deployment on {date} at {time}.",reminder:48},
-    {id:"T5",event:"CR Rejected",       enabled:true, channels:["email","in_app"],  template:"Your change request {cr_id} has been rejected. Reason: {reason}.", reminder:0},
-    {id:"T6",event:"Reminder: Approval",enabled:true, channels:["email"],           template:"Reminder: Change request {cr_id} is awaiting your approval.",     reminder:12},
-    {id:"T7",event:"Low Inventory",     enabled:true, channels:["in_app"],          template:"{item} is running low on stock ({qty} remaining).",               reminder:72},
-    {id:"T8",event:"Fleet Status Change",enabled:false,channels:["in_app"],         template:"Vehicle {plate} status changed to {status} by {user}.",           reminder:0},
-  ]);
+  const {flash,tenantConfig,setTenantConfig,tid}=ctx;
+  const [triggers,setTriggers]=useState(()=>tenantConfig?.notification_policies||DEFAULT_TRIGGERS);
   const [editing,setEditing]=useState(null);
+  const [saving,setSaving]=useState(false);
+
+  // Sync from DB when tenantConfig loads after initial render
+  useEffect(()=>{
+    if(tenantConfig?.notification_policies) setTriggers(tenantConfig.notification_policies);
+  },[tenantConfig]);
 
   const toggle=(id)=>setTriggers(p=>p.map(t=>t.id!==id?t:{...t,enabled:!t.enabled}));
   const toggleCh=(id,ch)=>setTriggers(p=>p.map(t=>t.id!==id?t:{...t,channels:t.channels.includes(ch)?t.channels.filter(c=>c!==ch):[...t.channels,ch]}));
 
+  const savePolicies=async()=>{
+    // Validate reminder hours
+    const invalid=triggers.find(t=>!Number.isInteger(t.reminder)||t.reminder<0);
+    if(invalid){ flash(`Reminder hours for "${invalid.event}" must be a non-negative whole number`,"error"); return; }
+    setSaving(true);
+    try{
+      const saved=await saveTenantConfig(tid,{notification_policies:triggers});
+      setTenantConfig(p=>({...p,...saved,notification_policies:triggers}));
+      flash("Notification policies saved");
+    }catch(e){ flash(e.message||"Failed to save policies","error"); }
+    finally{ setSaving(false); }
+  };
+
   return (
     <div>
       <PageTitle title="Notification Policies" sub="Configure triggers, templates and reminder intervals"
-        action={<button onClick={()=>flash("Notification policies saved")} style={btn("primary")}>Save Policies</button>}/>
+        action={<button onClick={savePolicies} disabled={saving} style={btn("primary")}>{saving?"Saving…":"Save Policies"}</button>}/>
       <div style={card(0)}>
         <table style={{width:"100%",borderCollapse:"collapse"}}>
           <TH cols={["Event","Enabled","Channels","Reminder (hrs)","Template",""]}/>
@@ -3500,5 +3641,534 @@ function AuditLog({ctx}){
         <div style={{padding:"9px 14px",borderTop:`1px solid #FAFAFA`,fontSize:11,color:C.muted}}>{shown.length} entries</div>
       </div>
     </div>
+  );
+}
+// ══════════════════════════════════════════════════════════════
+// HELPDESK ADMIN
+// ══════════════════════════════════════════════════════════════
+const ASSET_CATS = ["Laptop","Desktop","Monitor","Phone","Tablet","Printer","Networking","Furniture","Software","Other"];
+
+function HelpdeskAdmin({ctx}){
+  const {tickets,setTickets,users,updateTicketFn,addCommentFn,fetchCommentsFn,flash}=ctx;
+  const [f,setF]=useState({});
+  const [sel,setSel]=useState(null);
+
+  const shown=(tickets||[]).filter(t=>{
+    if(f.q && !`${t.title} ${t.description} ${t.ticketType}`.toLowerCase().includes(f.q.toLowerCase())) return false;
+    if(f.status && t.status!==f.status) return false;
+    if(f.type && t.ticketType!==f.type) return false;
+    if(f.priority && t.priority!==f.priority) return false;
+    return true;
+  });
+
+  const counts={
+    open:(tickets||[]).filter(t=>t.status==="open").length,
+    in_progress:(tickets||[]).filter(t=>t.status==="in_progress").length,
+    resolved:(tickets||[]).filter(t=>["resolved","fulfilled","closed"].includes(t.status)).length,
+    total:(tickets||[]).length,
+  };
+
+  return (
+    <div>
+      <PageTitle title="Helpdesk" sub="Service requests and incidents"/>
+      <div style={{display:"flex",gap:14,flexWrap:"wrap",marginBottom:20}}>
+        <StatCard label="Total Tickets" value={counts.total} color={C.blue} icon="🎫"/>
+        <StatCard label="Open" value={counts.open} color={C.amber} icon="🔓"/>
+        <StatCard label="In Progress" value={counts.in_progress} color={C.blue} icon="⚙"/>
+        <StatCard label="Resolved / Closed" value={counts.resolved} color={C.green} icon="✓"/>
+      </div>
+      <Filters values={f} onChange={setF} fields={[
+        {k:"q",label:"Search",w:260,ph:"Title, description…"},
+        {k:"type",label:"Type",type:"select",opts:[{v:"service_request",l:"Service Request"},{v:"incident",l:"Incident"}]},
+        {k:"status",label:"Status",type:"select",opts:Object.entries(TICKET_STATUS).map(([v,m])=>({v,l:m.label}))},
+        {k:"priority",label:"Priority",type:"select",opts:Object.entries(TICKET_PRIORITY).map(([v,m])=>({v,l:m.label}))},
+      ]}/>
+      <div style={card(0)}>
+        <table style={{width:"100%",borderCollapse:"collapse"}}>
+          <TH cols={["Ticket","Type","Priority","Status","Requester","Created","Actions"]}/>
+          <tbody>
+            {shown.length===0
+              ?<tr><td colSpan={7}><Empty icon="🎫" title="No tickets found" sub="Tickets raised by staff will appear here"/></td></tr>
+              :shown.map((t,i)=>(
+                <tr key={t.id} style={{borderBottom:i<shown.length-1?`1px solid #FAFAFA`:"none"}}>
+                  <td style={{padding:"10px 14px",maxWidth:260}}>
+                    <div style={{fontSize:13,fontWeight:600,color:C.ink}}>{t.title}</div>
+                    <div style={{fontSize:11,color:C.muted,marginTop:2}}>#{t.id?.slice(-6)}</div>
+                  </td>
+                  <td style={{padding:"10px 14px"}}>
+                    <span style={{fontSize:11,fontWeight:600,padding:"2px 8px",borderRadius:4,
+                      background:t.ticketType==="incident"?C.redBg:C.blueBg,
+                      color:t.ticketType==="incident"?C.red:C.blue}}>
+                      {t.ticketType==="incident"?"Incident":"Service Req"}
+                    </span>
+                  </td>
+                  <td style={{padding:"10px 14px"}}><PChip p={t.priority}/></td>
+                  <td style={{padding:"10px 14px"}}><TChip s={t.status}/></td>
+                  <td style={{padding:"10px 14px",fontSize:12,color:C.muted}}>
+                    {users.find(u=>u.id===t.requesterId)?.name||t.requesterId||"—"}
+                  </td>
+                  <td style={{padding:"10px 14px",fontSize:11,color:C.muted,whiteSpace:"nowrap"}}>{fmtD(t.createdAt)}</td>
+                  <td style={{padding:"10px 14px"}}>
+                    <button onClick={()=>setSel(t)} style={{...btn("ghost"),padding:"4px 10px",fontSize:11}}>View</button>
+                  </td>
+                </tr>
+              ))
+            }
+          </tbody>
+        </table>
+        <div style={{padding:"9px 14px",borderTop:`1px solid #FAFAFA`,fontSize:11,color:C.muted}}>{shown.length} tickets</div>
+      </div>
+      {sel&&<TicketAdminModal ticket={sel} users={users} onClose={()=>setSel(null)}
+        onUpdate={async(id,upd)=>{ const n=await updateTicketFn(id,upd); setSel(n); flash("Ticket updated"); }}
+        fetchComments={fetchCommentsFn} addComment={addCommentFn}/>}
+    </div>
+  );
+}
+
+function TicketAdminModal({ticket,users,onClose,onUpdate,fetchComments,addComment}){
+  const [t,setT]=useState(ticket);
+  const [comments,setComments]=useState([]);
+  const [commentText,setCommentText]=useState("");
+  const [saving,setSaving]=useState(false);
+
+  useEffect(()=>{
+    fetchComments(ticket.id).then(c=>setComments(c||[])).catch(()=>{});
+  },[ticket.id]);
+
+  const requester=users.find(u=>u.id===t.requesterId);
+
+  const save=async(upd)=>{
+    setSaving(true);
+    try{
+      const n=await onUpdate(t.id,upd);
+      setT(n);
+      // Notify requester when status changes
+      if(upd.status && requester?.email){
+        emailTicketStatusUpdate(requester.email, n, upd.status, "Support Team").catch(()=>{});
+      }
+    }finally{ setSaving(false); }
+  };
+
+  const postComment=async()=>{
+    if(!commentText.trim()) return;
+    const body=commentText.trim();
+    try{
+      const c=await addComment({ticket_id:t.id,body,author_type:"admin"});
+      setComments(p=>[...p,c]);
+      setCommentText("");
+      // Notify requester of admin reply
+      if(requester?.email){
+        emailTicketComment(requester.email, t, "Support Team", body).catch(()=>{});
+      }
+    }catch(e){console.error(e);}
+  };
+
+  return (
+    <Modal title={`Ticket: ${t.title}`} sub={`#${t.id?.slice(-6)} · ${t.ticketType==="incident"?"Incident":"Service Request"}`} onClose={onClose} w={720}>
+      <div style={{display:"grid",gridTemplateColumns:"1fr 280px",gap:20}}>
+        <div>
+          <div style={{...card(14),marginBottom:14}}>
+            <div style={{fontSize:12,fontWeight:700,color:C.muted,marginBottom:8}}>DESCRIPTION</div>
+            <p style={{fontSize:13,color:C.ink,lineHeight:1.6}}>{t.description||"—"}</p>
+            {t.impactDetails&&<><div style={{fontSize:12,fontWeight:700,color:C.muted,marginTop:12,marginBottom:6}}>IMPACT</div><p style={{fontSize:13,color:C.ink,lineHeight:1.6}}>{t.impactDetails}</p></>}
+          </div>
+          <div style={{...card(14)}}>
+            <div style={{fontSize:12,fontWeight:700,color:C.muted,marginBottom:10}}>COMMENTS</div>
+            <div style={{display:"flex",flexDirection:"column",gap:10,maxHeight:220,overflowY:"auto",marginBottom:12}}>
+              {comments.length===0&&<div style={{fontSize:12,color:C.muted}}>No comments yet.</div>}
+              {comments.map(c=>(
+                <div key={c.id} style={{background:"#F8FAFC",borderRadius:7,padding:"9px 12px"}}>
+                  <div style={{fontSize:11,fontWeight:600,color:C.ink,marginBottom:3}}>{c.author_type==="admin"?"Admin":users.find(u=>u.id===c.author_id)?.name||"Staff"} · {fmtDT(c.created_at)}</div>
+                  <div style={{fontSize:12,color:C.ink,lineHeight:1.5}}>{c.body}</div>
+                </div>
+              ))}
+            </div>
+            <div style={{display:"flex",gap:8}}>
+              <textarea value={commentText} onChange={e=>setCommentText(e.target.value)}
+                placeholder="Add an admin comment…"
+                style={{...inp(),resize:"none",minHeight:60,flex:1}}/>
+              <button onClick={postComment} style={{...btn("primary"),alignSelf:"flex-end",padding:"8px 14px"}}>Send</button>
+            </div>
+          </div>
+        </div>
+        <div style={{display:"flex",flexDirection:"column",gap:12}}>
+          <div style={card(14)}>
+            <div style={{fontSize:12,fontWeight:700,color:C.muted,marginBottom:10}}>TICKET DETAILS</div>
+            <div style={{display:"flex",flexDirection:"column",gap:8}}>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                <span style={{fontSize:11,color:C.muted}}>Status</span>
+                <TChip s={t.status}/>
+              </div>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                <span style={{fontSize:11,color:C.muted}}>Priority</span>
+                <PChip p={t.priority}/>
+              </div>
+              <div style={{display:"flex",justifyContent:"space-between"}}>
+                <span style={{fontSize:11,color:C.muted}}>Requester</span>
+                <span style={{fontSize:12,fontWeight:600,color:C.ink}}>{users.find(u=>u.id===t.requesterId)?.name||"—"}</span>
+              </div>
+              <div style={{display:"flex",justifyContent:"space-between"}}>
+                <span style={{fontSize:11,color:C.muted}}>Created</span>
+                <span style={{fontSize:11,color:C.muted}}>{fmtD(t.createdAt)}</span>
+              </div>
+            </div>
+          </div>
+          <div style={card(14)}>
+            <div style={{fontSize:12,fontWeight:700,color:C.muted,marginBottom:10}}>UPDATE STATUS</div>
+            <select value={t.status} onChange={e=>save({status:e.target.value})} style={{...inp(),marginBottom:10,fontSize:12}} disabled={saving}>
+              {Object.entries(TICKET_STATUS).map(([v,m])=><option key={v} value={v}>{m.label}</option>)}
+            </select>
+            <div style={{fontSize:12,fontWeight:700,color:C.muted,marginBottom:6}}>ASSIGN TO</div>
+            <select value={t.assigneeId||""} onChange={e=>save({assignee_id:e.target.value||null})} style={{...inp(),fontSize:12}} disabled={saving}>
+              <option value="">Unassigned</option>
+              {users.filter(u=>["it_admin","super_admin"].includes(u.role)).map(u=><option key={u.id} value={u.id}>{u.name}</option>)}
+            </select>
+          </div>
+          {(t.status==="resolved"||t.status==="closed")&&(
+            <div style={card(14)}>
+              <div style={{fontSize:12,fontWeight:700,color:C.muted,marginBottom:8}}>RESOLUTION NOTES</div>
+              <textarea value={t.resolutionNotes||""} onChange={e=>setT(v=>({...v,resolutionNotes:e.target.value}))}
+                onBlur={e=>save({resolution_notes:e.target.value})}
+                placeholder="Describe how this was resolved…"
+                style={{...inp(),resize:"none",minHeight:80,fontSize:12}}/>
+            </div>
+          )}
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+// ══════════════════════════════════════════════════════════════
+// ASSET REGISTRY
+// ══════════════════════════════════════════════════════════════
+function AssetRegistry({ctx}){
+  const {assets,setAssets,users,createAssetFn,updateAssetFn,flash,tid}=ctx;
+  const [f,setF]=useState({});
+  const [sel,setSel]=useState(null);
+  const [showNew,setShowNew]=useState(false);
+  const [csvError,setCsvError]=useState("");
+  const [csvUploading,setCsvUploading]=useState(false);
+
+  const shown=(assets||[]).filter(a=>{
+    if(f.q && !`${a.name} ${a.serial_number} ${a.tag} ${a.brand}`.toLowerCase().includes(f.q.toLowerCase())) return false;
+    if(f.status && a.status!==f.status) return false;
+    if(f.category && a.category!==f.category) return false;
+    return true;
+  });
+
+  const counts={
+    total:(assets||[]).length,
+    available:(assets||[]).filter(a=>a.status==="available").length,
+    assigned:(assets||[]).filter(a=>a.status==="assigned").length,
+    in_repair:(assets||[]).filter(a=>a.status==="in_repair").length,
+  };
+
+  const downloadTemplate=()=>{
+    const headers=["name","brand","model","serial_number","tag","category","status","purchase_date","purchase_cost","warranty_expiry","location","notes"];
+    const sample=["Dell Laptop","Dell","Latitude 5540","SN12345678","AP-LT-001","Laptop","available","2024-01-15","850000","2027-01-15","IT Store","Assigned to IT dept"];
+    const csv=[headers.join(","),sample.join(",")].join("\n");
+    const blob=new Blob([csv],{type:"text/csv"});
+    const url=URL.createObjectURL(blob);
+    const a=document.createElement("a"); a.href=url; a.download="asset_registry_template.csv"; a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const handleCsvUpload=async(e)=>{
+    const file=e.target.files?.[0]; if(!file) return;
+    setCsvError(""); setCsvUploading(true);
+    try{
+      const text=await file.text();
+      const lines=text.trim().split("\n");
+      const headers=lines[0].split(",").map(h=>h.trim().toLowerCase().replace(/\s+/g,"_"));
+      const rows=lines.slice(1).filter(l=>l.trim());
+      const created=[];
+      for(const row of rows){
+        const vals=row.split(",").map(v=>v.trim().replace(/^"|"$/g,""));
+        const obj={tenant_id:tid};
+        headers.forEach((h,i)=>{ if(vals[i]!==undefined) obj[h]=vals[i]; });
+        if(!obj.name) continue;
+        const saved=await createAssetFn(obj);
+        created.push(saved);
+      }
+      flash(`Imported ${created.length} asset${created.length!==1?"s":""} successfully`);
+    }catch(err){
+      setCsvError(err.message||"CSV import failed");
+    }finally{
+      setCsvUploading(false);
+      e.target.value="";
+    }
+  };
+
+  return (
+    <div>
+      <PageTitle title="Asset Registry" sub="Manage IT and office assets"
+        action={
+          <div style={{display:"flex",gap:8,alignItems:"center"}}>
+            <button onClick={downloadTemplate} style={{...btn("ghost"),fontSize:12}}>⬇ CSV Template</button>
+            <label style={{...btn("ghost"),fontSize:12,cursor:"pointer"}}>
+              {csvUploading?"Importing…":"⬆ Import CSV"}
+              <input type="file" accept=".csv" onChange={handleCsvUpload} style={{display:"none"}} disabled={csvUploading}/>
+            </label>
+            <button onClick={()=>setShowNew(true)} style={{...btn("primary"),fontSize:12}}>+ New Asset</button>
+          </div>
+        }
+      />
+      {csvError&&<div style={{padding:"10px 14px",borderRadius:7,background:C.redBg,border:`1px solid ${C.red}30`,fontSize:13,color:C.red,marginBottom:12}}>{csvError}</div>}
+      <div style={{display:"flex",gap:14,flexWrap:"wrap",marginBottom:20}}>
+        <StatCard label="Total Assets" value={counts.total} color={C.blue} icon="💻"/>
+        <StatCard label="Available" value={counts.available} color={C.green} icon="✓"/>
+        <StatCard label="Assigned" value={counts.assigned} color={C.violet} icon="👤"/>
+        <StatCard label="In Repair" value={counts.in_repair} color={C.amber} icon="🔧"/>
+      </div>
+      <Filters values={f} onChange={setF} fields={[
+        {k:"q",label:"Search",w:260,ph:"Name, serial, tag…"},
+        {k:"category",label:"Category",type:"select",opts:ASSET_CATS.map(c=>({v:c,l:c}))},
+        {k:"status",label:"Status",type:"select",opts:Object.entries(ASSET_STATUS).map(([v,m])=>({v,l:m.label}))},
+      ]}/>
+      <div style={card(0)}>
+        <table style={{width:"100%",borderCollapse:"collapse"}}>
+          <TH cols={["Asset","Category","Serial / Tag","Status","Assigned To","Purchase Date","Actions"]}/>
+          <tbody>
+            {shown.length===0
+              ?<tr><td colSpan={7}><Empty icon="💻" title="No assets found" sub="Add assets individually or import via CSV"/></td></tr>
+              :shown.map((a,i)=>(
+                <tr key={a.id} style={{borderBottom:i<shown.length-1?`1px solid #FAFAFA`:"none"}}>
+                  <td style={{padding:"10px 14px"}}>
+                    <div style={{fontSize:13,fontWeight:600,color:C.ink}}>{a.name}</div>
+                    <div style={{fontSize:11,color:C.muted,marginTop:1}}>{[a.brand,a.model].filter(Boolean).join(" · ")||"—"}</div>
+                  </td>
+                  <td style={{padding:"10px 14px",fontSize:12,color:C.muted}}>{a.category||"—"}</td>
+                  <td style={{padding:"10px 14px"}}>
+                    <div style={{fontSize:12,color:C.ink}}>{a.serial_number||"—"}</div>
+                    {a.tag&&<div style={{fontSize:11,color:C.muted}}>{a.tag}</div>}
+                  </td>
+                  <td style={{padding:"10px 14px"}}><AChip s={a.status}/></td>
+                  <td style={{padding:"10px 14px",fontSize:12,color:C.muted}}>
+                    {a.assigned_to?users.find(u=>u.id===a.assigned_to)?.name||a.assigned_to:"—"}
+                  </td>
+                  <td style={{padding:"10px 14px",fontSize:11,color:C.muted,whiteSpace:"nowrap"}}>{fmtSafe(a.purchase_date)}</td>
+                  <td style={{padding:"10px 14px"}}>
+                    <button onClick={()=>setSel(a)} style={{...btn("ghost"),padding:"4px 10px",fontSize:11}}>Manage</button>
+                  </td>
+                </tr>
+              ))
+            }
+          </tbody>
+        </table>
+        <div style={{padding:"9px 14px",borderTop:`1px solid #FAFAFA`,fontSize:11,color:C.muted}}>{shown.length} assets</div>
+      </div>
+      {sel&&<AssetModal asset={sel} users={users} onClose={()=>setSel(null)}
+        onSave={async(id,upd)=>{ const n=await updateAssetFn(id,upd); setSel(n); flash("Asset updated"); }}/>}
+      {showNew&&<AssetModal asset={null} users={users} onClose={()=>setShowNew(false)}
+        onSave={async(_,data)=>{ await createAssetFn(data); setShowNew(false); flash("Asset created"); }}/>}
+    </div>
+  );
+}
+
+function AssetModal({asset,users,onClose,onSave}){
+  const isNew=!asset;
+  const [form,setForm]=useState(asset||{status:"available",category:"Laptop"});
+  const [saving,setSaving]=useState(false);
+  const [tab,setTab]=useState("details");
+  const [assignNote,setAssignNote]=useState("");
+
+  const set=(k,v)=>setForm(p=>({...p,[k]:v}));
+
+  const handleSave=async()=>{
+    if(!form.name?.trim()){ alert("Asset name is required."); return; }
+    setSaving(true);
+    try{
+      const today=new Date().toISOString().split("T")[0];
+      const prevAssignee=asset?.assigned_to||null;
+      const newAssignee=form.assigned_to||null;
+      let history=[...(asset?.usage_history||[])];
+
+      if(!isNew && prevAssignee!==newAssignee){
+        // Close the last open entry for the previous assignee
+        if(prevAssignee){
+          let closedOne=false;
+          history=history.map(h=>{
+            if(!h.returned_date&&!closedOne){closedOne=true;return {...h,returned_date:form.assigned_date||today};}
+            return h;
+          });
+        }
+        // Open a new entry for the new assignee
+        if(newAssignee){
+          const name=users.find(u=>u.id===newAssignee)?.name||newAssignee;
+          history=[...history,{
+            assigned_to:newAssignee,
+            assigned_to_name:name,
+            assigned_date:form.assigned_date||today,
+            returned_date:null,
+            notes:assignNote.trim()||"",
+          }];
+        }
+      }
+
+      // Auto-set status when assigning/unassigning
+      let status=form.status;
+      if(!isNew && prevAssignee!==newAssignee){
+        if(newAssignee && status!=="assigned") status="assigned";
+        if(!newAssignee && status==="assigned") status="available";
+      }
+
+      await onSave(form.id,{...form,status,usage_history:history});
+      onClose();
+    }catch(e){ alert(e.message); }
+    finally{ setSaving(false); }
+  };
+
+  const history=[...(asset?.usage_history||[])].reverse(); // newest first
+  const prevAssignee=asset?.assigned_to||null;
+  const newAssignee=form.assigned_to||null;
+  const assigneeChanged=!isNew&&prevAssignee!==newAssignee;
+
+  return (
+    <Modal title={isNew?"New Asset":form.name||"Asset"} sub={isNew?"Add a new asset to the registry":"Manage asset details and assignment"} onClose={onClose} w={700}>
+      {/* Tabs */}
+      <div style={{display:"flex",gap:8,marginBottom:18}}>
+        {["details","assignment","history"].map(t=>(
+          <button key={t} onClick={()=>setTab(t)} style={{
+            ...btn(tab===t?"primary":"ghost"),
+            fontSize:12,padding:"5px 14px",textTransform:"capitalize",
+            position:"relative",
+          }}>
+            {t}
+            {t==="history"&&history.length>0&&(
+              <span style={{marginLeft:6,fontSize:10,fontWeight:700,padding:"1px 6px",borderRadius:10,
+                background:tab==="history"?"rgba(255,255,255,.3)":C.brand,color:"#fff"}}>{history.length}</span>
+            )}
+          </button>
+        ))}
+      </div>
+
+      {/* ── DETAILS TAB ── */}
+      {tab==="details"&&(
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:14}}>
+          {[
+            {l:"Asset Name *",k:"name",span:2},
+            {l:"Brand",k:"brand"},{l:"Model",k:"model"},
+            {l:"Serial Number",k:"serial_number"},{l:"Asset Tag",k:"asset_tag"},
+            {l:"Category",k:"category",type:"select",opts:ASSET_CATS},
+            {l:"Status",k:"status",type:"select",opts:Object.keys(ASSET_STATUS)},
+            {l:"Location / Department",k:"site"},{l:"Purchase Date",k:"purchase_date",type:"date"},
+            {l:"Purchase Cost (₦)",k:"purchase_cost",type:"number"},{l:"Warranty Expiry",k:"warranty_expiry",type:"date"},
+          ].map(f=>(
+            <div key={f.k} style={{gridColumn:f.span===2?"1 / -1":"auto"}}>
+              <label style={LBL}>{f.l}</label>
+              {f.type==="select"
+                ?<select value={form[f.k]||""} onChange={e=>set(f.k,e.target.value)} style={{...inp(),fontSize:12}}>
+                   <option value="">Select…</option>
+                   {f.opts.map(o=>typeof o==="string"?<option key={o} value={o}>{o}</option>:<option key={o} value={o}>{ASSET_STATUS[o]?.label||o}</option>)}
+                 </select>
+                :<input type={f.type||"text"} value={form[f.k]||""} onChange={e=>set(f.k,f.type==="number"?Number(e.target.value):e.target.value)} style={{...inp(),fontSize:12}}/>}
+            </div>
+          ))}
+          <div style={{gridColumn:"1 / -1"}}>
+            <label style={LBL}>Notes</label>
+            <textarea value={form.notes||""} onChange={e=>set("notes",e.target.value)} style={{...inp(),resize:"none",minHeight:70,fontSize:12}}/>
+          </div>
+        </div>
+      )}
+
+      {/* ── ASSIGNMENT TAB ── */}
+      {tab==="assignment"&&(
+        <div style={{display:"flex",flexDirection:"column",gap:14}}>
+          {/* Current assignment banner */}
+          {prevAssignee&&(
+            <div style={{padding:"12px 14px",borderRadius:8,background:C.surface,border:`1px solid ${C.border}`,fontSize:12,color:C.ink2,display:"flex",alignItems:"center",gap:10}}>
+              <span style={{fontSize:16}}>👤</span>
+              <div>
+                <div style={{fontWeight:700,color:C.ink}}>Currently assigned to: {users.find(u=>u.id===prevAssignee)?.name||prevAssignee}</div>
+                {asset?.assigned_date&&<div style={{fontSize:11,color:C.muted,marginTop:1}}>Since {fmtSafe(asset.assigned_date)}</div>}
+              </div>
+            </div>
+          )}
+          <div>
+            <label style={LBL}>Assign To</label>
+            <select value={form.assigned_to||""} onChange={e=>set("assigned_to",e.target.value||null)} style={{...inp(),fontSize:12}}>
+              <option value="">— Unassigned —</option>
+              {users.map(u=><option key={u.id} value={u.id}>{u.name} — {u.dept||u.department||""}</option>)}
+            </select>
+          </div>
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
+            <div>
+              <label style={LBL}>Effective Date</label>
+              <input type="date" value={form.assigned_date||""} onChange={e=>set("assigned_date",e.target.value)} style={{...inp(),fontSize:12}}/>
+            </div>
+            <div>
+              <label style={LBL}>Status</label>
+              <select value={form.status||"available"} onChange={e=>set("status",e.target.value)} style={{...inp(),fontSize:12}}>
+                {Object.entries(ASSET_STATUS).map(([v,m])=><option key={v} value={v}>{m.label}</option>)}
+              </select>
+            </div>
+          </div>
+          <div>
+            <label style={LBL}>Assignment Note (optional)</label>
+            <input value={assignNote} onChange={e=>setAssignNote(e.target.value)} placeholder="e.g. Replacing old laptop, new hire kit…" style={{...inp(),fontSize:12}}/>
+          </div>
+          {assigneeChanged&&(
+            <div style={{padding:"12px 14px",borderRadius:8,
+              background:newAssignee?C.greenBg:C.amberBg,
+              border:`1px solid ${newAssignee?C.green:C.amber}30`,
+              fontSize:12,color:newAssignee?C.green:C.amber,fontWeight:600}}>
+              {newAssignee
+                ?`✓ Will be assigned to ${users.find(u=>u.id===newAssignee)?.name||"new user"} — history will be updated on save.`
+                :"⚠ Asset will be unassigned — previous assignment will be closed in history."}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ── HISTORY TAB ── */}
+      {tab==="history"&&(
+        <div>
+          {history.length===0
+            ?<Empty icon="📋" title="No assignment history yet" sub="History is recorded automatically each time this asset is assigned or reassigned"/>
+            :<div style={{display:"flex",flexDirection:"column",gap:10}}>
+               {history.map((h,i)=>{
+                 const isCurrent=!h.returned_date;
+                 return (
+                   <div key={i} style={{
+                     borderRadius:9,padding:"14px 16px",
+                     border:`1px solid ${isCurrent?C.green:C.border}`,
+                     background:isCurrent?C.greenBg:"#FAFAFA",
+                     display:"grid",gridTemplateColumns:"28px 1fr auto",gap:12,alignItems:"start",
+                   }}>
+                     {/* Timeline dot */}
+                     <div style={{width:28,height:28,borderRadius:"50%",
+                       background:isCurrent?C.green:C.muted,color:"#fff",
+                       display:"flex",alignItems:"center",justifyContent:"center",
+                       fontSize:13,marginTop:1,flexShrink:0}}>
+                       {isCurrent?"👤":"✓"}
+                     </div>
+                     <div>
+                       <div style={{fontSize:14,fontWeight:700,color:C.ink}}>{h.assigned_to_name||"Unknown User"}</div>
+                       <div style={{fontSize:12,color:C.muted,marginTop:3,display:"flex",gap:8,flexWrap:"wrap"}}>
+                         <span>From: <strong style={{color:C.ink2}}>{h.assigned_date?fmtSafe(h.assigned_date):"—"}</strong></span>
+                         <span>·</span>
+                         <span>To: <strong style={{color:isCurrent?C.green:C.ink2}}>{h.returned_date?fmtSafe(h.returned_date):"Present"}</strong></span>
+                       </div>
+                       {h.notes&&<div style={{fontSize:11,color:C.muted,marginTop:5,fontStyle:"italic"}}>"{h.notes}"</div>}
+                     </div>
+                     {isCurrent&&(
+                       <span style={{fontSize:10,fontWeight:700,padding:"3px 8px",borderRadius:10,background:C.green,color:"#fff",alignSelf:"center"}}>
+                         CURRENT
+                       </span>
+                     )}
+                   </div>
+                 );
+               })}
+             </div>
+          }
+        </div>
+      )}
+
+      <div style={{display:"flex",justifyContent:"flex-end",gap:10,marginTop:20,paddingTop:16,borderTop:`1px solid ${C.border}`}}>
+        <button onClick={onClose} style={{...btn("ghost")}}>Cancel</button>
+        <button onClick={handleSave} disabled={saving} style={{...btn("primary")}}>{saving?"Saving…":isNew?"Create Asset":"Save Changes"}</button>
+      </div>
+    </Modal>
   );
 }

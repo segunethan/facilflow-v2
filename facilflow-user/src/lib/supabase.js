@@ -213,3 +213,70 @@ export const updateCRStage = async (id, updates) => {
   if (error) throw error
   return data
 }
+// ── HELPDESK TICKETS ─────────────────────────────────────
+export const fetchMyTickets = async (userId, tenantId) => {
+  const { data, error } = await supabase
+    .from('tickets')
+    .select('*')
+    .eq('tenant_id', tenantId)
+    .eq('requester_id', userId)
+    .order('created_at', { ascending: false })
+  if (error) throw error
+  return data
+}
+
+export const createTicket = async (ticket) => {
+  const { data, error } = await supabase
+    .from('tickets')
+    .insert([ticket])
+    .select().single()
+  if (error) throw error
+  return data
+}
+
+export const updateTicket = async (id, updates) => {
+  const { data, error } = await supabase
+    .from('tickets')
+    .update({ ...updates, updated_at: new Date().toISOString() })
+    .eq('id', id).select().single()
+  if (error) throw error
+  return data
+}
+
+export const fetchTicketComments = async (ticketId) => {
+  const { data, error } = await supabase
+    .from('ticket_comments')
+    .select('*')
+    .eq('ticket_id', ticketId)
+    .order('created_at')
+  if (error) throw error
+  return data
+}
+
+export const addTicketComment = async (comment) => {
+  const { data, error } = await supabase
+    .from('ticket_comments')
+    .insert([{ ...comment, created_at: new Date().toISOString() }])
+    .select().single()
+  if (error) throw error
+  return data
+}
+
+export const fetchTicketCategories = async (tenantId) => {
+  const { data, error } = await supabase
+    .from('ticket_categories')
+    .select('*')
+    .eq('tenant_id', tenantId)
+    .order('category')
+  if (error) throw error
+  return data
+}
+
+export const uploadTicketAttachment = async (ticketId, file) => {
+  const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, '_')
+  const path = `${ticketId}/${Date.now()}-${safeName}`
+  const { error } = await supabase.storage.from('ticket-attachments').upload(path, file)
+  if (error) throw error
+  const { data: { publicUrl } } = supabase.storage.from('ticket-attachments').getPublicUrl(path)
+  return { name: file.name, size: file.size, url: publicUrl, path, type: file.type }
+}
