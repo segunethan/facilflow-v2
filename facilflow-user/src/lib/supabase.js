@@ -18,7 +18,7 @@ export const onAuthChange = (cb) => supabase.auth.onAuthStateChange(cb)
 const APP_URL = import.meta.env.VITE_APP_URL || 'https://facilflowuser.vercel.app'
 
 export const sendPasswordReset = (email) =>
-  supabase.auth.resetPasswordForEmail(email, { redirectTo: APP_URL })
+  supabase.functions.invoke('reset-password', { body: { email, redirect_to: APP_URL } })
 
 export const updatePassword = (newPassword) =>
   supabase.auth.updateUser({ password: newPassword })
