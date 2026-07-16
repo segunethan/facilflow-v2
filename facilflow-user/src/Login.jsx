@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { signIn } from './lib/supabase.js'
+import { signIn, sendPasswordReset } from './lib/supabase.js'
 
 const C = {
   brand: '#C8102E',
@@ -66,6 +66,10 @@ export default function Login({ onLogin, appName = 'Staff Portal' }) {
   const [error, setError] = useState('')
   const [showPass, setShowPass] = useState(false)
   const [mounted, setMounted] = useState(false)
+  const [step, setStep] = useState('login') // 'login' | 'forgot' | 'sent'
+  const [resetEmail, setResetEmail] = useState('')
+  const [resetLoading, setResetLoading] = useState(false)
+  const [resetError, setResetError] = useState('')
 
   useEffect(() => {
     const t = setTimeout(() => setMounted(true), 60)
@@ -84,6 +88,21 @@ export default function Login({ onLogin, appName = 'Staff Portal' }) {
       setError(err.message || 'Invalid email or password')
     } finally {
       setLoading(false)
+    }
+  }
+
+  const handleForgot = async (e) => {
+    e.preventDefault()
+    setResetLoading(true)
+    setResetError('')
+    try {
+      const { error } = await sendPasswordReset(resetEmail)
+      if (error) throw error
+      setStep('sent')
+    } catch (err) {
+      setResetError(err.message || 'Failed to send reset email. Try again.')
+    } finally {
+      setResetLoading(false)
     }
   }
 
@@ -250,82 +269,149 @@ export default function Login({ onLogin, appName = 'Staff Portal' }) {
           </div>
         </div>
 
-        {/* ── Right Login Panel ── */}
+        {/* ── Right Panel ── */}
         <div className="ff-right" style={{ position: 'relative' }}>
           <div style={{ width: '100%', maxWidth: 368 }}>
-            <div style={{
-              width: 50, height: 50, borderRadius: 13,
-              background: 'linear-gradient(135deg, #FEF2F4, #fff)',
-              border: `1.5px solid rgba(200,16,46,.2)`,
-              display: 'flex', alignItems: 'center', justifyContent: 'center',
-              marginBottom: 24, boxShadow: '0 2px 12px rgba(200,16,46,.08)',
-            }}>
-              <svg width="24" height="24" viewBox="0 0 24 24" fill="none">
-                <path d="M12 3L4 7.5v6c0 4.5 3.2 8.5 8 9.5 4.8-1 8-5 8-9.5v-6L12 3z"
-                  fill="rgba(200,16,46,.12)" stroke={C.brand} strokeWidth="1.6" strokeLinejoin="round"/>
-                <path d="M9 12.5l2 2L15 10" stroke={C.brand} strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"/>
-              </svg>
-            </div>
 
-            <h2 style={{ fontSize: 26, fontWeight: 800, color: C.ink, letterSpacing: '-.03em', marginBottom: 8 }}>
-              Welcome back
-            </h2>
-            <p style={{ fontSize: 14, color: C.muted, lineHeight: 1.6, marginBottom: 32 }}>
-              Sign in to your {appName} account to continue.
-            </p>
-
-            <form onSubmit={handleLogin} style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
-              <div>
-                <label style={{ fontSize: 12.5, fontWeight: 600, color: C.ink, display: 'block', marginBottom: 6 }}>Email address</label>
-                <input className="ff-input" type="email" value={email} onChange={e => setEmail(e.target.value)}
-                  required autoFocus placeholder="you@africaprudential.com"/>
+            {/* ── LOGIN STEP ── */}
+            {step === 'login' && (<>
+              <div style={{
+                width: 50, height: 50, borderRadius: 13,
+                background: 'linear-gradient(135deg, #FEF2F4, #fff)',
+                border: `1.5px solid rgba(200,16,46,.2)`,
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                marginBottom: 24, boxShadow: '0 2px 12px rgba(200,16,46,.08)',
+              }}>
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none">
+                  <path d="M12 3L4 7.5v6c0 4.5 3.2 8.5 8 9.5 4.8-1 8-5 8-9.5v-6L12 3z"
+                    fill="rgba(200,16,46,.12)" stroke={C.brand} strokeWidth="1.6" strokeLinejoin="round"/>
+                  <path d="M9 12.5l2 2L15 10" stroke={C.brand} strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"/>
+                </svg>
               </div>
-              <div>
-                <label style={{ fontSize: 12.5, fontWeight: 600, color: C.ink, display: 'block', marginBottom: 6 }}>Password</label>
-                <div style={{ position: 'relative' }}>
-                  <input className="ff-input" type={showPass ? 'text' : 'password'} value={password}
-                    onChange={e => setPassword(e.target.value)} required placeholder="Enter your password"
-                    style={{ paddingRight: 42 }}/>
-                  <button type="button" className="ff-eye-btn" onClick={() => setShowPass(v => !v)}>
-                    {showPass
-                      ? <svg width="18" height="18" viewBox="0 0 18 18" fill="none"><path d="M2 9s3-6 7-6 7 6 7 6-3 6-7 6-7-6-7-6z" stroke="currentColor" strokeWidth="1.4"/><circle cx="9" cy="9" r="2.2" stroke="currentColor" strokeWidth="1.4"/><line x1="3" y1="3" x2="15" y2="15" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/></svg>
-                      : <svg width="18" height="18" viewBox="0 0 18 18" fill="none"><path d="M2 9s3-6 7-6 7 6 7 6-3 6-7 6-7-6-7-6z" stroke="currentColor" strokeWidth="1.4"/><circle cx="9" cy="9" r="2.2" stroke="currentColor" strokeWidth="1.4"/></svg>
-                    }
-                  </button>
-                </div>
-              </div>
-
-              {error && (
-                <div style={{ padding: '10px 14px', borderRadius: 8, background: '#FEF2F2', border: '1px solid #FCA5A5',
-                  fontSize: 13, color: '#DC2626', fontWeight: 500, display: 'flex', alignItems: 'center', gap: 8 }}>
-                  <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
-                    <circle cx="7" cy="7" r="6" stroke="#DC2626" strokeWidth="1.3"/>
-                    <path d="M7 4v4M7 9.5v.5" stroke="#DC2626" strokeWidth="1.3" strokeLinecap="round"/>
-                  </svg>
-                  {error}
-                </div>
-              )}
-
-              <button type="submit" className="ff-btn" disabled={loading} style={{ marginTop: 4 }}>
-                {loading ? 'Signing in…' : 'Sign in to Staff Portal →'}
-              </button>
-            </form>
-
-            <p style={{ textAlign: 'center', fontSize: 12, color: C.muted, marginTop: 24, lineHeight: 1.6 }}>
-              Forgot your password?{' '}
-              <span style={{ color: C.brand, fontWeight: 600, cursor: 'pointer' }}>Contact your administrator</span>
-            </p>
-
-            <div style={{ marginTop: 36, padding: '12px 16px', background: '#F8FAFC', borderRadius: 8,
-              border: '1px solid #E2E8F0', display: 'flex', alignItems: 'flex-start', gap: 10 }}>
-              <svg width="15" height="15" viewBox="0 0 15 15" fill="none" style={{ flexShrink: 0, marginTop: 1 }}>
-                <circle cx="7.5" cy="7.5" r="6.5" stroke="#94A3B8" strokeWidth="1.2"/>
-                <path d="M7.5 6.5v3.5M7.5 4.5v1" stroke="#94A3B8" strokeWidth="1.4" strokeLinecap="round"/>
-              </svg>
-              <p style={{ fontSize: 11.5, color: '#94A3B8', lineHeight: 1.55 }}>
-                This portal is for authorized Africa Prudential staff only. All sessions are encrypted and monitored.
+              <h2 style={{ fontSize: 26, fontWeight: 800, color: C.ink, letterSpacing: '-.03em', marginBottom: 8 }}>Welcome back</h2>
+              <p style={{ fontSize: 14, color: C.muted, lineHeight: 1.6, marginBottom: 32 }}>
+                Sign in to your {appName} account to continue.
               </p>
-            </div>
+              <form onSubmit={handleLogin} style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
+                <div>
+                  <label style={{ fontSize: 12.5, fontWeight: 600, color: C.ink, display: 'block', marginBottom: 6 }}>Email address</label>
+                  <input className="ff-input" type="email" value={email} onChange={e => setEmail(e.target.value)}
+                    required autoFocus placeholder="you@africaprudential.com"/>
+                </div>
+                <div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+                    <label style={{ fontSize: 12.5, fontWeight: 600, color: C.ink }}>Password</label>
+                    <button type="button" onClick={() => { setResetEmail(email); setStep('forgot'); setResetError(''); }}
+                      style={{ fontSize: 12, color: C.brand, fontWeight: 600, background: 'none', border: 'none', cursor: 'pointer', padding: 0, fontFamily: 'inherit' }}>
+                      Forgot password?
+                    </button>
+                  </div>
+                  <div style={{ position: 'relative' }}>
+                    <input className="ff-input" type={showPass ? 'text' : 'password'} value={password}
+                      onChange={e => setPassword(e.target.value)} required placeholder="Enter your password"
+                      style={{ paddingRight: 42 }}/>
+                    <button type="button" className="ff-eye-btn" onClick={() => setShowPass(v => !v)}>
+                      {showPass
+                        ? <svg width="18" height="18" viewBox="0 0 18 18" fill="none"><path d="M2 9s3-6 7-6 7 6 7 6-3 6-7 6-7-6-7-6z" stroke="currentColor" strokeWidth="1.4"/><circle cx="9" cy="9" r="2.2" stroke="currentColor" strokeWidth="1.4"/><line x1="3" y1="3" x2="15" y2="15" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/></svg>
+                        : <svg width="18" height="18" viewBox="0 0 18 18" fill="none"><path d="M2 9s3-6 7-6 7 6 7 6-3 6-7 6-7-6-7-6z" stroke="currentColor" strokeWidth="1.4"/><circle cx="9" cy="9" r="2.2" stroke="currentColor" strokeWidth="1.4"/></svg>
+                      }
+                    </button>
+                  </div>
+                </div>
+                {error && (
+                  <div style={{ padding: '10px 14px', borderRadius: 8, background: '#FEF2F2', border: '1px solid #FCA5A5',
+                    fontSize: 13, color: '#DC2626', fontWeight: 500, display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><circle cx="7" cy="7" r="6" stroke="#DC2626" strokeWidth="1.3"/><path d="M7 4v4M7 9.5v.5" stroke="#DC2626" strokeWidth="1.3" strokeLinecap="round"/></svg>
+                    {error}
+                  </div>
+                )}
+                <button type="submit" className="ff-btn" disabled={loading} style={{ marginTop: 4 }}>
+                  {loading ? 'Signing in…' : `Sign in to ${appName} →`}
+                </button>
+              </form>
+              <div style={{ marginTop: 36, padding: '12px 16px', background: '#F8FAFC', borderRadius: 8,
+                border: '1px solid #E2E8F0', display: 'flex', alignItems: 'flex-start', gap: 10 }}>
+                <svg width="15" height="15" viewBox="0 0 15 15" fill="none" style={{ flexShrink: 0, marginTop: 1 }}>
+                  <circle cx="7.5" cy="7.5" r="6.5" stroke="#94A3B8" strokeWidth="1.2"/>
+                  <path d="M7.5 6.5v3.5M7.5 4.5v1" stroke="#94A3B8" strokeWidth="1.4" strokeLinecap="round"/>
+                </svg>
+                <p style={{ fontSize: 11.5, color: '#94A3B8', lineHeight: 1.55 }}>
+                  This portal is for authorized Africa Prudential staff only. All sessions are encrypted and monitored.
+                </p>
+              </div>
+            </>)}
+
+            {/* ── FORGOT PASSWORD STEP ── */}
+            {step === 'forgot' && (<>
+              <div style={{
+                width: 50, height: 50, borderRadius: 13,
+                background: 'linear-gradient(135deg, #FEF2F4, #fff)',
+                border: `1.5px solid rgba(200,16,46,.2)`,
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                marginBottom: 24, boxShadow: '0 2px 12px rgba(200,16,46,.08)',
+              }}>
+                <svg width="22" height="22" viewBox="0 0 22 22" fill="none">
+                  <rect x="3" y="9" width="16" height="11" rx="2" stroke={C.brand} strokeWidth="1.6"/>
+                  <path d="M7 9V6a4 4 0 018 0v3" stroke={C.brand} strokeWidth="1.6" strokeLinecap="round"/>
+                  <circle cx="11" cy="14.5" r="1.5" fill={C.brand}/>
+                </svg>
+              </div>
+              <h2 style={{ fontSize: 26, fontWeight: 800, color: C.ink, letterSpacing: '-.03em', marginBottom: 8 }}>Reset password</h2>
+              <p style={{ fontSize: 14, color: C.muted, lineHeight: 1.6, marginBottom: 32 }}>
+                Enter your email address and we'll send you a link to set a new password.
+              </p>
+              <form onSubmit={handleForgot} style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
+                <div>
+                  <label style={{ fontSize: 12.5, fontWeight: 600, color: C.ink, display: 'block', marginBottom: 6 }}>Email address</label>
+                  <input className="ff-input" type="email" value={resetEmail} onChange={e => setResetEmail(e.target.value)}
+                    required autoFocus placeholder="you@africaprudential.com"/>
+                </div>
+                {resetError && (
+                  <div style={{ padding: '10px 14px', borderRadius: 8, background: '#FEF2F2', border: '1px solid #FCA5A5',
+                    fontSize: 13, color: '#DC2626', fontWeight: 500, display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><circle cx="7" cy="7" r="6" stroke="#DC2626" strokeWidth="1.3"/><path d="M7 4v4M7 9.5v.5" stroke="#DC2626" strokeWidth="1.3" strokeLinecap="round"/></svg>
+                    {resetError}
+                  </div>
+                )}
+                <button type="submit" className="ff-btn" disabled={resetLoading} style={{ marginTop: 4 }}>
+                  {resetLoading ? 'Sending…' : 'Send reset link →'}
+                </button>
+              </form>
+              <p style={{ textAlign: 'center', fontSize: 12, color: C.muted, marginTop: 24 }}>
+                <button onClick={() => setStep('login')} style={{ color: C.brand, fontWeight: 600, background: 'none', border: 'none', cursor: 'pointer', fontFamily: 'inherit', fontSize: 12 }}>
+                  ← Back to sign in
+                </button>
+              </p>
+            </>)}
+
+            {/* ── EMAIL SENT STEP ── */}
+            {step === 'sent' && (<>
+              <div style={{
+                width: 60, height: 60, borderRadius: 15,
+                background: 'linear-gradient(135deg, #ECFDF5, #fff)',
+                border: `1.5px solid rgba(5,150,105,.25)`,
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                marginBottom: 24, boxShadow: '0 2px 12px rgba(5,150,105,.1)',
+              }}>
+                <svg width="26" height="26" viewBox="0 0 26 26" fill="none">
+                  <circle cx="13" cy="13" r="11" stroke="#059669" strokeWidth="1.6"/>
+                  <path d="M8 13l3.5 3.5L18 9" stroke="#059669" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/>
+                </svg>
+              </div>
+              <h2 style={{ fontSize: 26, fontWeight: 800, color: C.ink, letterSpacing: '-.03em', marginBottom: 8 }}>Check your inbox</h2>
+              <p style={{ fontSize: 14, color: C.muted, lineHeight: 1.7, marginBottom: 28 }}>
+                We sent a password reset link to <strong style={{ color: C.ink }}>{resetEmail}</strong>.
+                Click the link in the email to set your new password.
+              </p>
+              <div style={{ padding: '14px 16px', background: '#F0FDF4', borderRadius: 10, border: '1px solid #BBF7D0',
+                fontSize: 12.5, color: '#15803D', lineHeight: 1.6, marginBottom: 24 }}>
+                The link expires in <strong>1 hour</strong>. Check your spam folder if you don't see it.
+              </div>
+              <button onClick={() => setStep('login')} className="ff-btn">
+                Back to sign in
+              </button>
+            </>)}
+
           </div>
 
           <div style={{ position: 'absolute', bottom: 20, fontSize: 11, color: '#CBD5E1', textAlign: 'center', width: '100%' }}>

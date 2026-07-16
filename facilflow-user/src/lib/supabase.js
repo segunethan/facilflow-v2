@@ -15,6 +15,12 @@ export const getSession = () => supabase.auth.getSession()
 
 export const onAuthChange = (cb) => supabase.auth.onAuthStateChange(cb)
 
+export const sendPasswordReset = (email) =>
+  supabase.auth.resetPasswordForEmail(email, { redirectTo: window.location.origin })
+
+export const updatePassword = (newPassword) =>
+  supabase.auth.updateUser({ password: newPassword })
+
 // ── DATA HELPERS ───────────────────────────────────────────
 
 // Get logged-in user's profile from users table

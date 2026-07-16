@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { signIn } from './lib/supabase.js'
+import { signIn, sendPasswordReset } from './lib/supabase.js'
 
 const C = {
   brand: '#C8102E', brandDk: '#A00D24', brandLt: '#FEF2F4',
@@ -74,6 +74,10 @@ export default function Login({ onLogin }) {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [showPass, setShowPass] = useState(false)
+  const [step, setStep] = useState('login') // 'login' | 'forgot' | 'sent'
+  const [resetEmail, setResetEmail] = useState('')
+  const [resetLoading, setResetLoading] = useState(false)
+  const [resetError, setResetError] = useState('')
 
   const handleLogin = async (e) => {
     e.preventDefault()
@@ -87,6 +91,21 @@ export default function Login({ onLogin }) {
       setError(err.message || 'Invalid email or password')
     } finally {
       setLoading(false)
+    }
+  }
+
+  const handleForgot = async (e) => {
+    e.preventDefault()
+    setResetLoading(true)
+    setResetError('')
+    try {
+      const { error } = await sendPasswordReset(resetEmail)
+      if (error) throw error
+      setStep('sent')
+    } catch (err) {
+      setResetError(err.message || 'Failed to send reset email. Try again.')
+    } finally {
+      setResetLoading(false)
     }
   }
 
@@ -220,63 +239,102 @@ export default function Login({ onLogin }) {
               </div>
             </div>
 
-            <h2 style={{ fontSize: 24, fontWeight: 800, color: C.ink, letterSpacing: '-.03em', marginBottom: 6 }}>
-              Welcome back!
-            </h2>
-            <p style={{ fontSize: 13.5, color: C.muted, marginBottom: 28, lineHeight: 1.6 }}>
-              Sign in to your admin account to manage the platform.
-            </p>
-
-            <form onSubmit={handleLogin} style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-              <div>
-                <label style={{ fontSize: 12.5, fontWeight: 600, color: C.ink, display: 'block', marginBottom: 6 }}>
-                  Email address
-                </label>
-                <input className="adm-input" type="email" value={email}
-                  onChange={e => setEmail(e.target.value)} required autoFocus
-                  placeholder="admin@africaprudential.com"/>
-              </div>
-
-              <div>
-                <label style={{ fontSize: 12.5, fontWeight: 600, color: C.ink, display: 'block', marginBottom: 6 }}>
-                  Password
-                </label>
-                <div style={{ position: 'relative' }}>
-                  <input className="adm-input" type={showPass ? 'text' : 'password'} value={password}
-                    onChange={e => setPassword(e.target.value)} required placeholder="Enter your password"
-                    style={{ paddingRight: 40 }}/>
-                  <button type="button" className="adm-eye" onClick={() => setShowPass(v => !v)}>
-                    {showPass
-                      ? <svg width="17" height="17" viewBox="0 0 17 17" fill="none"><path d="M2 8.5s3-5.5 6.5-5.5S15 8.5 15 8.5s-3 5.5-6.5 5.5S2 8.5 2 8.5z" stroke="currentColor" strokeWidth="1.3"/><circle cx="8.5" cy="8.5" r="2" stroke="currentColor" strokeWidth="1.3"/><line x1="2.5" y1="2.5" x2="14.5" y2="14.5" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"/></svg>
-                      : <svg width="17" height="17" viewBox="0 0 17 17" fill="none"><path d="M2 8.5s3-5.5 6.5-5.5S15 8.5 15 8.5s-3 5.5-6.5 5.5S2 8.5 2 8.5z" stroke="currentColor" strokeWidth="1.3"/><circle cx="8.5" cy="8.5" r="2" stroke="currentColor" strokeWidth="1.3"/></svg>
-                    }
-                  </button>
+            {/* ── LOGIN STEP ── */}
+            {step === 'login' && (<>
+              <h2 style={{ fontSize: 24, fontWeight: 800, color: C.ink, letterSpacing: '-.03em', marginBottom: 6 }}>Welcome back!</h2>
+              <p style={{ fontSize: 13.5, color: C.muted, marginBottom: 28, lineHeight: 1.6 }}>
+                Sign in to your admin account to manage the platform.
+              </p>
+              <form onSubmit={handleLogin} style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+                <div>
+                  <label style={{ fontSize: 12.5, fontWeight: 600, color: C.ink, display: 'block', marginBottom: 6 }}>Email address</label>
+                  <input className="adm-input" type="email" value={email}
+                    onChange={e => setEmail(e.target.value)} required autoFocus
+                    placeholder="admin@africaprudential.com"/>
                 </div>
-              </div>
-
-              {error && (
-                <div style={{
-                  padding: '10px 14px', borderRadius: 7,
-                  background: '#FEF2F2', border: '1px solid #FCA5A5',
-                  fontSize: 13, color: '#DC2626', fontWeight: 500,
-                  display: 'flex', alignItems: 'center', gap: 8,
-                }}>
-                  <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
-                    <circle cx="7" cy="7" r="6" stroke="#DC2626" strokeWidth="1.3"/>
-                    <path d="M7 4v3.5M7 9v.5" stroke="#DC2626" strokeWidth="1.3" strokeLinecap="round"/>
-                  </svg>
-                  {error}
+                <div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+                    <label style={{ fontSize: 12.5, fontWeight: 600, color: C.ink }}>Password</label>
+                    <button type="button" onClick={() => { setResetEmail(email); setStep('forgot'); setResetError(''); }}
+                      style={{ fontSize: 12, color: C.brand, fontWeight: 600, background: 'none', border: 'none', cursor: 'pointer', padding: 0, fontFamily: 'inherit' }}>
+                      Forgot password?
+                    </button>
+                  </div>
+                  <div style={{ position: 'relative' }}>
+                    <input className="adm-input" type={showPass ? 'text' : 'password'} value={password}
+                      onChange={e => setPassword(e.target.value)} required placeholder="Enter your password"
+                      style={{ paddingRight: 40 }}/>
+                    <button type="button" className="adm-eye" onClick={() => setShowPass(v => !v)}>
+                      {showPass
+                        ? <svg width="17" height="17" viewBox="0 0 17 17" fill="none"><path d="M2 8.5s3-5.5 6.5-5.5S15 8.5 15 8.5s-3 5.5-6.5 5.5S2 8.5 2 8.5z" stroke="currentColor" strokeWidth="1.3"/><circle cx="8.5" cy="8.5" r="2" stroke="currentColor" strokeWidth="1.3"/><line x1="2.5" y1="2.5" x2="14.5" y2="14.5" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"/></svg>
+                        : <svg width="17" height="17" viewBox="0 0 17 17" fill="none"><path d="M2 8.5s3-5.5 6.5-5.5S15 8.5 15 8.5s-3 5.5-6.5 5.5S2 8.5 2 8.5z" stroke="currentColor" strokeWidth="1.3"/><circle cx="8.5" cy="8.5" r="2" stroke="currentColor" strokeWidth="1.3"/></svg>
+                      }
+                    </button>
+                  </div>
                 </div>
-              )}
+                {error && (
+                  <div style={{ padding: '10px 14px', borderRadius: 7, background: '#FEF2F2', border: '1px solid #FCA5A5',
+                    fontSize: 13, color: '#DC2626', fontWeight: 500, display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><circle cx="7" cy="7" r="6" stroke="#DC2626" strokeWidth="1.3"/><path d="M7 4v3.5M7 9v.5" stroke="#DC2626" strokeWidth="1.3" strokeLinecap="round"/></svg>
+                    {error}
+                  </div>
+                )}
+                <button type="submit" className="adm-btn" disabled={loading} style={{ marginTop: 4 }}>
+                  {loading ? 'Signing in…' : 'Sign In →'}
+                </button>
+              </form>
+              <p style={{ textAlign: 'center', fontSize: 12, color: C.muted, marginTop: 20, lineHeight: 1.6 }}>
+                Access restricted to authorized administrators only.
+              </p>
+            </>)}
 
-              <button type="submit" className="adm-btn" disabled={loading} style={{ marginTop: 4 }}>
-                {loading ? 'Signing in…' : 'Sign In →'}
-              </button>
-            </form>
+            {/* ── FORGOT PASSWORD STEP ── */}
+            {step === 'forgot' && (<>
+              <h2 style={{ fontSize: 24, fontWeight: 800, color: C.ink, letterSpacing: '-.03em', marginBottom: 6 }}>Reset password</h2>
+              <p style={{ fontSize: 13.5, color: C.muted, marginBottom: 28, lineHeight: 1.6 }}>
+                Enter your admin email and we'll send you a reset link.
+              </p>
+              <form onSubmit={handleForgot} style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+                <div>
+                  <label style={{ fontSize: 12.5, fontWeight: 600, color: C.ink, display: 'block', marginBottom: 6 }}>Email address</label>
+                  <input className="adm-input" type="email" value={resetEmail}
+                    onChange={e => setResetEmail(e.target.value)} required autoFocus
+                    placeholder="admin@africaprudential.com"/>
+                </div>
+                {resetError && (
+                  <div style={{ padding: '10px 14px', borderRadius: 7, background: '#FEF2F2', border: '1px solid #FCA5A5',
+                    fontSize: 13, color: '#DC2626', fontWeight: 500, display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><circle cx="7" cy="7" r="6" stroke="#DC2626" strokeWidth="1.3"/><path d="M7 4v3.5M7 9v.5" stroke="#DC2626" strokeWidth="1.3" strokeLinecap="round"/></svg>
+                    {resetError}
+                  </div>
+                )}
+                <button type="submit" className="adm-btn" disabled={resetLoading} style={{ marginTop: 4 }}>
+                  {resetLoading ? 'Sending…' : 'Send reset link →'}
+                </button>
+              </form>
+              <p style={{ textAlign: 'center', fontSize: 12, color: C.muted, marginTop: 20 }}>
+                <button onClick={() => setStep('login')} style={{ color: C.brand, fontWeight: 600, background: 'none', border: 'none', cursor: 'pointer', fontFamily: 'inherit', fontSize: 12 }}>
+                  ← Back to sign in
+                </button>
+              </p>
+            </>)}
 
-            <p style={{ textAlign: 'center', fontSize: 12, color: C.muted, marginTop: 20, lineHeight: 1.6 }}>
-              Access restricted to authorized administrators only.
-            </p>
+            {/* ── EMAIL SENT STEP ── */}
+            {step === 'sent' && (<>
+              <div style={{ width: 52, height: 52, borderRadius: 13, background: '#ECFDF5', border: '1.5px solid rgba(5,150,105,.25)',
+                display: 'flex', alignItems: 'center', justifyContent: 'center', marginBottom: 20, boxShadow: '0 2px 12px rgba(5,150,105,.1)' }}>
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="10" stroke="#059669" strokeWidth="1.6"/><path d="M7 12l3.5 3.5L17 9" stroke="#059669" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/></svg>
+              </div>
+              <h2 style={{ fontSize: 24, fontWeight: 800, color: C.ink, letterSpacing: '-.03em', marginBottom: 6 }}>Check your inbox</h2>
+              <p style={{ fontSize: 13.5, color: C.muted, marginBottom: 20, lineHeight: 1.7 }}>
+                A reset link was sent to <strong style={{ color: C.ink }}>{resetEmail}</strong>. Click it to set your new password.
+              </p>
+              <div style={{ padding: '12px 14px', background: '#F0FDF4', borderRadius: 8, border: '1px solid #BBF7D0',
+                fontSize: 12.5, color: '#15803D', lineHeight: 1.6, marginBottom: 24 }}>
+                The link expires in <strong>1 hour</strong>. Check spam if you don't see it.
+              </div>
+              <button onClick={() => setStep('login')} className="adm-btn">Back to sign in</button>
+            </>)}
           </div>
         </div>
       </div>

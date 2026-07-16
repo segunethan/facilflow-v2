@@ -10,6 +10,10 @@ export const signIn  = (email, password) => supabase.auth.signInWithPassword({ e
 export const signOut = () => supabase.auth.signOut()
 export const getSession = () => supabase.auth.getSession()
 export const onAuthChange = (cb) => supabase.auth.onAuthStateChange(cb)
+export const sendPasswordReset = (email) =>
+  supabase.auth.resetPasswordForEmail(email, { redirectTo: window.location.origin })
+export const updatePassword = (newPassword) =>
+  supabase.auth.updateUser({ password: newPassword })
 
 export const getProfile = async (userId) => {
   const { data, error } = await supabase.from('users').select('*').eq('id', userId).single()
