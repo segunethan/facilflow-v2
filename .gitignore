@@ -4,3 +4,16 @@ dist/
 .env.local
 .DS_Store
 *.log
+
+# Operational / test documents
+Operational work/
+*.xlsx
+*.zip
+*.docx
+*.pdf
+
+# Duplicate lockfiles
+**/package-lock 2.json
+
+# Supabase CLI temp files
+supabase/.temp/
